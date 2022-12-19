@@ -1,0 +1,3 @@
+max_width = 120
+struct_lit_width = 50
+# unstable: struct_lit_single_line = true

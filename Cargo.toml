@@ -1,0 +1,25 @@
+[package]
+name = "smarterr"
+version = "0.1.0"
+authors = ["Mike Mozal"]
+edition = "2021"
+
+readme = "README.md"
+description = "Smart error handling library"
+documentation = "https://docs.rs/smarterr"
+repository = "https://github.com/mozalmic/smarterr"
+
+license = "Apache-2.0"
+
+keywords = ["error", "smart", "library"]
+
+[lib]
+
+[dependencies]
+
+[dev-dependencies]
+smarterr-macro = { path = "macro"}
+
+[workspace]
+members = [ ".", "macro" ]
+default-members = [ ".", "macro" ]

@@ -1,0 +1,22 @@
+[package]
+name = "smarterr-macro"
+version = "0.1.0"
+authors = ["Mike Mozal"]
+edition = "2021"
+
+description = "Smart error handling library"
+documentation = "https://docs.rs/smarterr"
+repository = "https://github.com/mozalmic/smarterr"
+
+license = "Apache-2.0"
+
+keywords = ["error", "smart", "library"]
+
+[lib]
+proc-macro = true
+
+[dependencies]
+quote = "1.0.10"
+proc-macro2 = "1.0.32"
+convert_case = "0.6.0"
+syn = { version = "1.0.101", features=["full"] }
