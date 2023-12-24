@@ -349,7 +349,7 @@ use syn::{
     parse_macro_input,
     punctuated::Punctuated,
     token::{Brace, Comma, Gt, Lt, RArrow, Shl, Shr},
-    FieldsNamed, ItemFn, ItemImpl, LitStr, ReturnType, Type, Visibility,
+    FieldsNamed, ItemFn, ItemImpl, LitStr, ReturnType, Token, Type, Visibility,
 };
 
 mod keywords {
@@ -416,7 +416,7 @@ impl Parse for FledgedError {
             name: input.parse()?,
             definition: {
                 _ = syn::braced!(content in input);
-                content.parse_terminated(OwnError::parse)?
+                content.parse_terminated(OwnError::parse, Token![,])?
             },
         })
     }
@@ -424,7 +424,7 @@ impl Parse for FledgedError {
 
 impl Parse for SmartErrors {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
-        let t: Option<Punctuated<ErrorDef, Comma>> = input.parse_terminated(ErrorDef::parse).ok();
+        let t: Option<Punctuated<ErrorDef, Comma>> = input.parse_terminated(ErrorDef::parse, Token![,]).ok();
         Ok(SmartErrors { errors: t })
     }
 }
@@ -484,7 +484,7 @@ impl Parse for InheritedErrors {
             errors: {
                 let content;
                 let _ = syn::braced!(content in input);
-                content.parse_terminated(InheritedErrorDef::parse).ok()
+                content.parse_terminated(InheritedErrorDef::parse, Token![,]).ok()
             },
         })
     }
@@ -516,7 +516,7 @@ impl Parse for HandledError {
         if input.peek(Brace) {
             let content;
             let _ = syn::braced!(content in input);
-            for ident in content.parse_terminated::<Ident, Comma>(Ident::parse)? {
+            for ident in content.parse_terminated(Ident::parse, Token![,])? {
                 names.push(ident);
             }
         } else {
@@ -539,7 +539,7 @@ impl OwnError {
         let ctx_name_str = format!("{}Ctx", self.name);
         let ctx_name: Ident = Ident::new(&ctx_name_str, self.name.span());
         let definition = self.definition.clone().unwrap_or(FieldsNamed {
-            brace_token: Brace { span: name.span().clone() },
+            brace_token: Brace::default().into(),
             named: Punctuated::new(),
         });
 
@@ -776,13 +776,13 @@ pub fn smarterr_mod(metadata: TokenStream, input: TokenStream) -> TokenStream {
 
     let mut mod_content = proc_macro2::TokenStream::new();
     for item in &mut input.items {
-        if let syn::ImplItem::Method(method) = item {
+        if let syn::ImplItem::Fn(method) = item {
             let func: ItemFn = syn::parse2(quote! {
                 #method
             })
             .unwrap();
             for attr in &method.attrs {
-                if attr.path.segments.len() == 1 && attr.path.segments[0].ident == "smarterr" {
+                if attr.path().segments.len() == 1 && attr.path().segments[0].ident == "smarterr" {
                     if let Ok(smart_errors) = attr.parse_args::<SmartErrors>() {
                         let r = _smarterr(func, smart_errors, Some(mod_name.clone()));
                         let r0 = r.0;
@@ -799,7 +799,7 @@ pub fn smarterr_mod(metadata: TokenStream, input: TokenStream) -> TokenStream {
             // remove only smarterr attributes
             method
                 .attrs
-                .retain(|attr| !(attr.path.segments.len() == 1 && attr.path.segments[0].ident == "smarterr"));
+                .retain(|attr| !(attr.path().segments.len() == 1 && attr.path().segments[0].ident == "smarterr"));
         }
     }
 
@@ -948,7 +948,7 @@ fn _smarterr(
         input.block.stmts = handlers;
     }
 
-    let mut output = quote! { #input };
+    let output = quote! { #input };
 
     let ts = quote! {
         #[derive(std::fmt::Debug)]
