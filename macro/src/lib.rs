@@ -318,6 +318,25 @@
 //!     Ok(g)
 //! }
 //! ```
+//! It is also possible to define errors for methods. The only difference is that
+//! theses errors must be defined outside the implementation block. `smarterr_mod`
+//! macro is intended to do this. It should be used as an attribute for the
+//! implementation block. The name of the module should be passed as an argument.
+//! Here's an example:
+//! ```rust
+//! #[smarterr_mod(test_err)]
+//! impl Test {
+//!     #[smarterr(InitFailed{pub a: String, pub b: String} -> "Init error")]
+//!     pub fn new(a: &str, b: &str) -> Self {
+//!         Ok(Self {
+//!             a: a.parse()
+//!                 .throw_ctx(test_err::InitFailedCtx { a: a.to_string(), b: b.to_string() })?,
+//!             b: b.parse()
+//!                 .throw_ctx(test_err::InitFailedCtx { a: a.to_string(), b: b.to_string() })?,
+//!         })
+//!     }
+//! }
+//! ```
 
 use std::collections::BTreeSet;
 
@@ -330,12 +349,16 @@ use syn::{
     parse_macro_input,
     punctuated::Punctuated,
     token::{Brace, Comma, Gt, Lt, RArrow, Shl, Shr},
-    FieldsNamed, ItemFn, LitStr, ReturnType, Type, Visibility,
+    FieldsNamed, ItemFn, ItemImpl, LitStr, ReturnType, Type, Visibility,
 };
 
 mod keywords {
     syn::custom_keyword![from];
     syn::custom_keyword![handled];
+}
+
+struct ErrorNs {
+    name: Ident,
 }
 
 struct FledgedError {
@@ -377,6 +400,12 @@ type UnhandledError = OwnError;
 
 struct HandledError {
     names: Vec<Ident>,
+}
+
+impl Parse for ErrorNs {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        Ok(ErrorNs { name: input.parse()? })
+    }
 }
 
 impl Parse for FledgedError {
@@ -739,10 +768,67 @@ impl HandledError {
 }
 
 #[proc_macro_attribute]
+pub fn smarterr_mod(metadata: TokenStream, input: TokenStream) -> TokenStream {
+    let mut input = parse_macro_input!(input as ItemImpl);
+    let meta = parse_macro_input!(metadata as ErrorNs);
+
+    let mod_name: Ident = meta.name.clone();
+
+    let mut mod_content = proc_macro2::TokenStream::new();
+    for item in &mut input.items {
+        if let syn::ImplItem::Method(method) = item {
+            let func: ItemFn = syn::parse2(quote! {
+                #method
+            })
+            .unwrap();
+            for attr in &method.attrs {
+                if attr.path.segments.len() == 1 && attr.path.segments[0].ident == "smarterr" {
+                    if let Ok(smart_errors) = attr.parse_args::<SmartErrors>() {
+                        let r = _smarterr(func, smart_errors, Some(mod_name.clone()));
+                        let r0 = r.0;
+                        let func_out: ItemFn = syn::parse2(quote! {
+                            #r0
+                        })
+                        .unwrap();
+                        method.sig.output = func_out.sig.output;
+                        mod_content.extend(r.1.into_iter());
+                        break;
+                    }
+                }
+            }
+            // remove only smarterr attributes
+            method
+                .attrs
+                .retain(|attr| !(attr.path.segments.len() == 1 && attr.path.segments[0].ident == "smarterr"));
+        }
+    }
+
+    let output: TokenStream = quote! {
+        #input
+        mod #mod_name {
+            #mod_content
+        }
+    }
+    .into();
+    output
+}
+
+#[proc_macro_attribute]
 pub fn smarterr(metadata: TokenStream, input: TokenStream) -> TokenStream {
-    let mut input = parse_macro_input!(input as ItemFn);
+    let input = parse_macro_input!(input as ItemFn);
     let meta = parse_macro_input!(metadata as SmartErrors);
 
+    let (mut output, ts) = _smarterr(input, meta, None);
+
+    output.extend(ts.into_iter());
+    output.into()
+}
+
+fn _smarterr(
+    mut input: ItemFn,
+    meta: SmartErrors,
+    module: Option<Ident>,
+) -> (proc_macro2::TokenStream, proc_macro2::TokenStream) {
     let visibility = input.vis.clone();
     let err_enum: Ident = Ident::new(
         &format!("{}Error", input.sig.ident).to_case(Case::Pascal),
@@ -752,12 +838,20 @@ pub fn smarterr(metadata: TokenStream, input: TokenStream) -> TokenStream {
     input.sig.output = match input.sig.output {
         ReturnType::Default => {
             let spans = [input.sig.ident.span().clone(), input.sig.ident.span().clone()];
-            let rt = syn::Type::Verbatim(quote! { std::result::Result<(), #err_enum> });
+            let rt = if let Some(mod_name) = module {
+                syn::Type::Verbatim(quote! { std::result::Result<(), #mod_name::#err_enum> })
+            } else {
+                syn::Type::Verbatim(quote! { std::result::Result<(), #err_enum> })
+            };
             ReturnType::Type(RArrow { spans }, Box::<Type>::new(rt))
         }
         ReturnType::Type(arrow, tt) => {
             let spans = arrow.spans.clone();
-            let rt = syn::Type::Verbatim(quote! { std::result::Result<#tt, #err_enum> });
+            let rt = if let Some(mod_name) = module {
+                syn::Type::Verbatim(quote! { std::result::Result<#tt, #mod_name::#err_enum> })
+            } else {
+                syn::Type::Verbatim(quote! { std::result::Result<#tt, #err_enum> })
+            };
             ReturnType::Type(RArrow { spans }, Box::<Type>::new(rt))
         }
     };
@@ -854,9 +948,9 @@ pub fn smarterr(metadata: TokenStream, input: TokenStream) -> TokenStream {
         input.block.stmts = handlers;
     }
 
-    let mut output: TokenStream = quote! { #input }.into();
+    let mut output = quote! { #input };
 
-    let ts: TokenStream = quote! {
+    let ts = quote! {
         #[derive(std::fmt::Debug)]
         #visibility enum #err_enum {
             #enum_errors
@@ -879,12 +973,9 @@ pub fn smarterr(metadata: TokenStream, input: TokenStream) -> TokenStream {
         }
         #errors_ctx
         #errors_ctx_into_error_impl
-    }
-    .into();
+    };
 
-    output.extend(ts.into_iter());
-
-    output
+    (output, ts)
 }
 
 #[proc_macro]

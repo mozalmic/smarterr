@@ -278,3 +278,21 @@ pub fn numeric_func(err_ind: usize) -> String {
     Ok(g)
 }
 ```
+
+It is also possible to define errors for methods. The only difference is that theses errors must be defined outside the implementation block. `smarterr_mod` macro is intended to do this. It should be used as an attribute for the implementation block. The name of the module should be passed as an argument.
+
+Here's an example:
+```rust
+#[smarterr_mod(test_err)]
+impl Test {
+    #[smarterr(InitFailed{pub a: String, pub b: String} -> "Init error")]
+    pub fn new(a: &str, b: &str) -> Self {
+        Ok(Self {
+            a: a.parse()
+                .throw_ctx(test_err::InitFailedCtx { a: a.to_string(), b: b.to_string() })?,
+            b: b.parse()
+                .throw_ctx(test_err::InitFailedCtx { a: a.to_string(), b: b.to_string() })?,
+        })
+    }
+}
+```
