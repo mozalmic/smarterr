@@ -803,12 +803,32 @@ pub fn smarterr_mod(metadata: TokenStream, input: TokenStream) -> TokenStream {
             method
                 .attrs
                 .retain(|attr| !(attr.path().segments.len() == 1 && attr.path().segments[0].ident == "smarterr"));
+        } else if let syn::ImplItem::Macro(macros) = item {
+            // check it is `smarterr_fledged` macro
+            if macros.mac.path.segments.len() == 1 && macros.mac.path.segments[0].ident == "smarterr_fledged" {
+                // copy it to the mod
+                mod_content.extend(quote! {
+                    #macros
+                });
+            }
         }
     }
+
+    // remove `smarterr_fledged` macroses
+    input.items.retain(|item| {
+        if let syn::ImplItem::Macro(macros) = item {
+            // check it is `smarterr_fledged` macro
+            if macros.mac.path.segments.len() == 1 && macros.mac.path.segments[0].ident == "smarterr_fledged" {
+                return false;
+            }
+        }
+        true
+    });
 
     let output: TokenStream = quote! {
         #input
         mod #mod_name {
+            use smarterr_macro::smarterr_fledged;
             #mod_content
         }
     }
