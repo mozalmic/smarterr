@@ -733,16 +733,18 @@ impl UnhandledError {
         &self,
         err_enum: &Ident,
         from_err_enum: &Ident,
+        module: &Option<Ident>,
         from: &mut proc_macro2::TokenStream,
         handles: &mut proc_macro2::TokenStream,
     ) {
         let name = &self.name;
-
-        handles.append_all(quote!(
-            #from_err_enum::#name(e) => Err(#err_enum::#name(e)),
-        ));
-
-        from.append_all(quote!(#from_err_enum::#name(ctx) => #err_enum::#name(ctx),));
+        if let Some(mod_name) = module {
+            handles.append_all(quote!(#mod_name::#from_err_enum::#name(e) => Err(#mod_name::#err_enum::#name(e)),));
+            from.append_all(quote!(#mod_name::#from_err_enum::#name(ctx) => #mod_name::#err_enum::#name(ctx),));
+        } else {
+            handles.append_all(quote!(#from_err_enum::#name(e) => Err(#err_enum::#name(e)),));
+            from.append_all(quote!(#from_err_enum::#name(ctx) => #err_enum::#name(ctx),));
+        }
     }
 }
 
@@ -791,6 +793,7 @@ pub fn smarterr_mod(metadata: TokenStream, input: TokenStream) -> TokenStream {
                         })
                         .unwrap();
                         method.sig.output = func_out.sig.output;
+                        method.block = *func_out.block;
                         mod_content.extend(r.1.into_iter());
                         break;
                     }
@@ -838,7 +841,7 @@ fn _smarterr(
     input.sig.output = match input.sig.output {
         ReturnType::Default => {
             let spans = [input.sig.ident.span().clone(), input.sig.ident.span().clone()];
-            let rt = if let Some(mod_name) = module {
+            let rt = if let Some(mod_name) = &module {
                 syn::Type::Verbatim(quote! { std::result::Result<(), #mod_name::#err_enum> })
             } else {
                 syn::Type::Verbatim(quote! { std::result::Result<(), #err_enum> })
@@ -847,7 +850,7 @@ fn _smarterr(
         }
         ReturnType::Type(arrow, tt) => {
             let spans = arrow.spans.clone();
-            let rt = if let Some(mod_name) = module {
+            let rt = if let Some(mod_name) = &module {
                 syn::Type::Verbatim(quote! { std::result::Result<#tt, #mod_name::#err_enum> })
             } else {
                 syn::Type::Verbatim(quote! { std::result::Result<#tt, #err_enum> })
@@ -889,7 +892,7 @@ fn _smarterr(
             ie.errors.iter().flat_map(|p| p.iter()).for_each(|ed| match ed {
                 InheritedErrorDef::Unhandled(ue) => {
                     ue.to_unhandled_enum_error_item(&dedup, &mut enum_errors);
-                    ue.to_handler_action(&err_enum, &source_err_enum, &mut unhandled_from, &mut handles);
+                    ue.to_handler_action(&err_enum, &source_err_enum, &module, &mut unhandled_from, &mut handles);
                     ue.to_into_error_impl(&dedup, &err_enum, &mut errors_ctx_into_error_impl);
                     ue.to_errors_sources(&dedup, &err_enum, &mut errors_sources);
                     ue.to_display(&dedup, &err_enum, &mut errors_display);
@@ -929,11 +932,23 @@ fn _smarterr(
                 });
                 handlers.push(stmt.unwrap());
             } else {
-                let stmt = syn::parse2::<syn::Stmt>(quote! {
-                    impl From<#source_err_enum> for #err_enum {
-                        fn from(source: #source_err_enum) -> Self {
-                            match source {
-                                #unhandled_from
+                let stmt = syn::parse2::<syn::Stmt>(if let Some(mod_name) = &module {
+                    quote! {
+                        impl From<#mod_name::#source_err_enum> for #mod_name::#err_enum {
+                            fn from(source: #mod_name::#source_err_enum) -> Self {
+                                match source {
+                                    #unhandled_from
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    quote! {
+                        impl From<#source_err_enum> for #err_enum {
+                            fn from(source: #source_err_enum) -> Self {
+                                match source {
+                                    #unhandled_from
+                                }
                             }
                         }
                     }
