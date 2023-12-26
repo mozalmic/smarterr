@@ -358,6 +358,7 @@ mod keywords {
 }
 
 struct ErrorNs {
+    visibility: Visibility,
     name: Ident,
 }
 
@@ -404,7 +405,10 @@ struct HandledError {
 
 impl Parse for ErrorNs {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
-        Ok(ErrorNs { name: input.parse()? })
+        Ok(ErrorNs {
+            visibility: input.parse::<Visibility>().unwrap_or(Visibility::Inherited {}),
+            name: input.parse()?,
+        })
     }
 }
 
@@ -775,6 +779,7 @@ pub fn smarterr_mod(metadata: TokenStream, input: TokenStream) -> TokenStream {
     let meta = parse_macro_input!(metadata as ErrorNs);
 
     let mod_name: Ident = meta.name.clone();
+    let mod_visibility = meta.visibility.clone();
 
     let mut mod_content = proc_macro2::TokenStream::new();
     for item in &mut input.items {
@@ -827,7 +832,7 @@ pub fn smarterr_mod(metadata: TokenStream, input: TokenStream) -> TokenStream {
 
     let output: TokenStream = quote! {
         #input
-        mod #mod_name {
+        #mod_visibility mod #mod_name {
             use smarterr_macro::smarterr_fledged;
             #mod_content
         }
