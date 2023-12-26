@@ -39,8 +39,8 @@
 //! | numbers (i32, usize, etc)  | != 0                            | == 0              |
 //! | bool                       | false                           | true              |
 //! | strings (&str, String etc) | is_empty()                      | !is_empty()       |
-//! | Option                     | Some                            | None              |
-//! | Result                     | Ok                              | Err               |
+//! | Option                     | None                            | Some              |
+//! | Result                     | Err                             | OK                |
 //!
 //! If the condition is not met, the original value will be returned.
 //!
@@ -364,6 +364,7 @@ struct ErrorNs {
 struct FledgedError {
     visibility: Visibility,
     name: Ident,
+    err_templates: Option<Punctuated<Ident, Comma>>,
     definition: Punctuated<OwnError, Comma>,
 }
 
@@ -414,6 +415,16 @@ impl Parse for FledgedError {
         Ok(FledgedError {
             visibility: input.parse::<Visibility>().unwrap_or(Visibility::Inherited {}),
             name: input.parse()?,
+            err_templates: {
+                if input.peek(Lt) {
+                    _ = input.parse::<Lt>()?;
+                    let t = input.parse_terminated(Ident::parse, Token![,])?;
+                    _ = input.parse::<Gt>()?;
+                    Some(t)
+                } else {
+                    None
+                }
+            },
             definition: {
                 _ = syn::braced!(content in input);
                 content.parse_terminated(OwnError::parse, Token![,])?
