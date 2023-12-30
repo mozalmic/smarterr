@@ -857,7 +857,7 @@ fn _smarterr(
     meta: SmartErrors,
     module: Option<Ident>,
 ) -> (proc_macro2::TokenStream, proc_macro2::TokenStream) {
-    let visibility = input.vis.clone();
+    let mut visibility = input.vis.clone();
     let err_enum: Ident = Ident::new(
         &format!("{}Error", input.sig.ident).to_case(Case::Pascal),
         input.sig.ident.span(),
@@ -900,6 +900,7 @@ fn _smarterr(
 
     meta.errors.iter().flat_map(|p| p.iter()).for_each(|ed| match ed {
         ErrorDef::Own(oe) => {
+            visibility = oe.visibility.as_ref().unwrap_or(&visibility).clone();
             oe.to_enum_error_item(&mut enum_errors);
             oe.to_ctx(&visibility, &mut errors_ctx);
             oe.to_into_error_impl(&dedup, &err_enum, &mut errors_ctx_into_error_impl);
