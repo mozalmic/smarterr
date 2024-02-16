@@ -560,8 +560,8 @@ impl OwnError {
             quote! {
                 #[derive(std::fmt::Debug)]
                 #visibility struct #name {
-                    src: #struct_st,
-                    ctx: #ctx_name,
+                    pub src: #struct_st,
+                    pub ctx: #ctx_name,
                 }
                 impl #name {
                     pub fn new(src: #st, ctx: #ctx_name) -> Self {
@@ -594,8 +594,8 @@ impl OwnError {
             quote! {
                 #[derive(std::fmt::Debug)]
                 #visibility struct #name {
-                    src: #struct_st,
-                    ctx: #ctx_name,
+                    pub src: #struct_st,
+                    pub ctx: #ctx_name,
                 }
 
                 impl #name {
@@ -617,7 +617,7 @@ impl OwnError {
             quote! {
                 #[derive(std::fmt::Debug)]
                 #visibility struct #name {
-                    ctx: #ctx_name,
+                    pub ctx: #ctx_name,
                 }
 
                 impl #name {
