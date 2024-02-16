@@ -31,14 +31,14 @@ dependencies = [
 
 [[package]]
 name = "smarterr"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "smarterr-macro",
 ]
 
 [[package]]
 name = "smarterr-macro"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "convert_case",
  "proc-macro2",
