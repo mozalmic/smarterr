@@ -16,8 +16,8 @@
 //! | numbers (i32, usize, etc)  | != 0                            | == 0              |
 //! | bool                       | false                           | true              |
 //! | strings (&str, String etc) | is_empty()                      | !is_empty()       |
-//! | Option                     | Some                            | None              |
-//! | Result                     | Ok                              | Err               |
+//! | Option                     | None                            | Some              |
+//! | Result                     | Err                             | OK                |
 //!
 //! For detailed information, please see the [`SmartErr`][] macro.
 //!

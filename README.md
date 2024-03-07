@@ -23,8 +23,8 @@ Some functions may return simple types instead of _Result_. This part of the lib
 | numbers (i32, usize, etc)  | != 0                            | == 0              |
 | bool                       | false                           | true              |
 | strings (&str, String etc) | is_empty()                      | !is_empty()       |
-| Option                     | Some                            | None              |
-| Result                     | Ok                              | Err               |
+| Option                     | None                            | Some              |
+| Result                     | Err                             | OK                |
 
 If the condition is not met, the original value will be returned.
 
