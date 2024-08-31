@@ -114,6 +114,17 @@ macro_rules! simple_erroneous {
             fn throw_ctx<C: IntoError<E, Self::ES>>(self, ctx: C) -> Result<Self::T, E> {
                 ternary!($condition(&self), self, ctx.into_error(self))
             }
+
+            fn throw<ED: Chainable>(self, error: ED) -> Result<Self::T, ED> {
+                ternary!($condition(&self), self, error) /*.map_err(|e| {
+                                                             e.set_cause(self);
+                                                             e
+                                                         })*/
+            }
+
+            fn raise<ED: Chainable>(self, error: ED) -> Result<Self::T, ED> {
+                ternary!(!($condition(&self)), self, error)
+            }
         }
     };
 }
@@ -183,6 +194,14 @@ where
     pub fn value(&self) -> &T {
         &self.value
     }
+}
+
+pub trait Chainable
+where
+    Self: std::error::Error + Sized,
+{
+    /// Chains error with another error
+    fn set_source<ES>(&mut self, cause: ES);
 }
 
 pub trait Throwable
@@ -389,6 +408,10 @@ where
     /// }
     /// ```
     fn throw_ctx<C: IntoError<E, Self::ES>>(self, ctx: C) -> Result<Self::T, E>;
+
+    fn throw<ED: Chainable>(self, error: ED) -> Result<Self::T, ED>;
+
+    fn raise<ED: Chainable>(self, error: ED) -> Result<Self::T, ED>;
 }
 
 simple_erroneous!((), |_| true);
@@ -474,6 +497,18 @@ where
     fn throw_ctx<C: IntoError<E, Self::ES>>(self, ctx: C) -> Result<Self::T, E> {
         self.ok_or(ctx.into_error(()))
     }
+
+    fn throw<ED: Chainable>(self, mut error: ED) -> Result<Self::T, ED> {
+        error.set_source(());
+        self.throw_err(error)
+    }
+
+    fn raise<ED: Chainable>(self, mut error: ED) -> Result<Self::ES, ED> {
+        self.raise_err(error).map_err(|e| {
+            e.set_source(self);
+            e
+        })
+    }
 }
 
 fn swap_res<T, E>(res: Result<T, E>) -> Result<E, T> {
@@ -512,5 +547,12 @@ where
 
     fn throw_ctx<C: IntoError<E, Self::ES>>(self, ctx: C) -> Result<Self::T, E> {
         self.map_err(|v| ctx.into_error(v))
+    }
+
+    fn throw<ED: Chainable>(self, mut error: ED) -> Result<Self::T, ED> {
+        self.map_err(|e| {
+            error.set_source(e);
+            error
+        })
     }
 }

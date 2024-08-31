@@ -1,16 +1,16 @@
 [package]
-name = "smarterr-macro"
-version = "0.1.7"
+name = "errorset"
+version = "1.0.0"
 authors = ["Mike Mozal"]
 edition = "2021"
 
-description = "Smart error handling library"
+description = "ErrorSet library"
 documentation = "https://docs.rs/smarterr"
 repository = "https://github.com/mozalmic/smarterr"
 
 license = "Apache-2.0"
 
-keywords = ["error", "smart", "library"]
+keywords = ["error", "set", "library"]
 
 [lib]
 proc-macro = true
@@ -19,4 +19,6 @@ proc-macro = true
 quote = "1.0.10"
 proc-macro2 = "1.0.32"
 convert_case = "0.6.0"
-syn = { version = "2.0.42", features=["full"] }
+syn = { version = "2.0.42", features = ["full"] }
+thiserror = "1.0.63"
+anyhow = "1.0.86"
