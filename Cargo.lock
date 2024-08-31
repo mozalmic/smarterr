@@ -20,6 +20,8 @@ dependencies = [
 [[package]]
 name = "errorset"
 version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "44144e647577e3319348861b033a7f7bc2e51ccfdc34711d03ccc65ecd31fad3"
 dependencies = [
  "anyhow",
  "convert_case",

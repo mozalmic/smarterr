@@ -4,7 +4,7 @@ This library introduces simple approach of managing errors in applications and l
 It is based on `thiserror` and `anyhow` and extends their functionality with `errorset` macro.
 Here is a simple example of how to use it:
 
-```rust
+```rust,ignore
 
 // define new errors
 
@@ -52,7 +52,7 @@ pub fn error_set() -> Result<(), (Error1, Error2)> {
 
 The `errorset` macro generates a new error type that contains all the errors from the function signature. Here is how the generated code looks like:
 
-```rust
+```rust,ignore
 pub(crate) mod errors {
     use super::*;
     #[derive(::thiserror::Error, Debug)]
