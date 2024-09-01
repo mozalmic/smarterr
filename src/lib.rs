@@ -2,6 +2,9 @@
 
 use std::{rc::Rc, sync::Arc};
 
+#[cfg(feature = "errorset")]
+pub use errorset;
+
 #[cfg(feature = "atomic_error")]
 #[macro_export]
 macro_rules! error {
