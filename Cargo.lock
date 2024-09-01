@@ -19,9 +19,9 @@ dependencies = [
 
 [[package]]
 name = "errorset"
-version = "1.0.4"
+version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3f7d8c588199398c82a377f4385fa9142d6577eead2df44cad1d28af033ac97b"
+checksum = "7e2e22e57312c4c76e93bb64eabcbcb45c0c2cb3834e511ba8212e7540748ea8"
 dependencies = [
  "anyhow",
  "convert_case",
@@ -51,7 +51,7 @@ dependencies = [
 
 [[package]]
 name = "smarterr"
-version = "1.0.4"
+version = "1.0.5"
 dependencies = [
  "anyhow",
  "errorset",
