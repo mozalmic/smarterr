@@ -10,7 +10,7 @@ pub use errorset;
 macro_rules! error {
     ($evis:vis $name:ident<$source:ty> { $($vis:vis $field:ident: $ty:ty),* $(,)? } => $msg:literal) => {
         #[derive(thiserror::Error, Debug)]
-        #[thiserror::error($msg)]
+        #[error($msg)]
         $evis struct $name {
             $(
                 $vis $field: $ty,
@@ -21,7 +21,7 @@ macro_rules! error {
     };
     ($evis:vis $name:ident { $($vis:vis $field:ident: $ty:ty),* $(,)? } => $msg:literal) => {
         #[derive(thiserror::Error, Debug)]
-        #[thiserror::error($msg)]
+        #[error($msg)]
         $evis struct $name {
             $(
                 $vis $field: $ty,

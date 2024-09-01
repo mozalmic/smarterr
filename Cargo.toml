@@ -1,6 +1,6 @@
 [package]
 name = "smarterr"
-version = "1.0.1"
+version = "1.0.2"
 authors = ["Mike Mozal"]
 edition = "2021"
 
