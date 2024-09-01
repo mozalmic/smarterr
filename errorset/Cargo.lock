@@ -19,7 +19,7 @@ dependencies = [
 
 [[package]]
 name = "errorset"
-version = "1.0.0"
+version = "1.0.3"
 dependencies = [
  "anyhow",
  "convert_case",
