@@ -57,7 +57,7 @@ struct Output {
     fn_def: proc_macro2::TokenStream,
 }
 
-fn process_fn(args: &ErrorsetArgs, item_fn: ItemFn) -> Output {
+fn process_fn(args: &ErrorsetArgs, item_fn: &ItemFn) -> Option<Output> {
     // Extract the function name and convert it to camel-case for the enum name
     let fn_name = &item_fn.sig.ident;
     let enum_name = format_ident!("{}Errors", fn_name.to_string().to_case(Case::Pascal));
@@ -80,7 +80,7 @@ fn process_fn(args: &ErrorsetArgs, item_fn: ItemFn) -> Output {
         if let Some(last_segment) = path.segments.last() {
             if let PathArguments::AngleBracketed(ref params) = last_segment.arguments {
                 if params.args.len() == 2 {
-                    if let Some(syn::GenericArgument::Type(Type::Tuple(tuple))) = params.args.iter().nth(1) {
+                    if let Some(syn::GenericArgument::Type(Type::Tuple(tuple))) = params.args.iter().last() {
                         // Reconstruct path w/o generic arguments
                         let mut punctuated = Punctuated::<PathSegment, PathSep>::new();
                         for seg in path.segments.iter() {
@@ -109,6 +109,9 @@ fn process_fn(args: &ErrorsetArgs, item_fn: ItemFn) -> Output {
                         };
                         let err_types = tuple.elems.clone();
                         (new_return_type, err_types)
+                    } else if let Some(syn::GenericArgument::Type(Type::Paren(_paren))) = params.args.iter().last() {
+                        // If the second argument is dfined as `(Error1)`, it does not determined as a tuple, just leave it as is
+                        return None;
                     } else {
                         panic!("Expected the second generic argument to be a tuple");
                     }
@@ -159,30 +162,35 @@ fn process_fn(args: &ErrorsetArgs, item_fn: ItemFn) -> Output {
         #fn_body
     };
 
-    Output { enum_def: enum_def, fn_def: new_fn }
+    Some(Output { enum_def: enum_def, fn_def: new_fn })
 }
 
 fn handle_function(args: &ErrorsetArgs, item_fn: ItemFn) -> TokenStream {
-    let Output { enum_def, fn_def } = process_fn(args, item_fn);
-
-    // Combine the enum definition and the modified function
-    let output = if let Some(module) = &args.module {
-        let vis = &args.visibility;
-        quote! {
-            #vis mod #module {
-                use super::*;
-                #enum_def
+    if let Some(Output { enum_def, fn_def }) = process_fn(args, &item_fn) {
+        // Combine the enum definition and the modified function
+        let output = if let Some(module) = &args.module {
+            let vis = &args.visibility;
+            quote! {
+                #vis mod #module {
+                    use super::*;
+                    #enum_def
+                }
+                #fn_def
             }
-            #fn_def
-        }
+        } else {
+            quote! {
+                #enum_def
+                #fn_def
+            }
+        };
+
+        output.into()
     } else {
         quote! {
-            #enum_def
-            #fn_def
+            #item_fn
         }
-    };
-
-    output.into()
+        .into()
+    }
 }
 
 fn handle_impl_block(args: &ErrorsetArgs, item_impl: ItemImpl) -> TokenStream {
@@ -220,12 +228,14 @@ fn handle_impl_block(args: &ErrorsetArgs, item_impl: ItemImpl) -> TokenStream {
                 sig: method.sig.clone(),
                 block: Box::new(method.block.clone()),
             };
-            let Output { enum_def, fn_def } = process_fn(args, item_fn);
-
-            // Convert fn_def to ImplItem::Fn
-            let impl_item = syn::parse2::<ImplItemFn>(fn_def.into()).unwrap();
-            new_items.push(impl_item.into());
-            new_enums.push(enum_def);
+            if let Some(Output { enum_def, fn_def }) = process_fn(args, &item_fn) {
+                // Convert fn_def to ImplItem::Fn
+                let impl_item = syn::parse2::<ImplItemFn>(fn_def.into()).unwrap();
+                new_items.push(impl_item.into());
+                new_enums.push(enum_def);
+            } else {
+                new_items.push(item);
+            }
         } else {
             new_items.push(item);
         }
