@@ -1,6 +1,6 @@
 [package]
 name = "smarterr"
-version = "1.0.2"
+version = "1.0.3"
 authors = ["Mike Mozal"]
 edition = "2021"
 
@@ -16,15 +16,16 @@ keywords = ["error", "smart", "library", "set"]
 [lib]
 
 [dependencies]
-errorset = { version = "1.0.0", optional = true }
-thiserror = { version = "1.0.63", optional = true }
-anyhow = { version = "1.0.86", optional = true }
-
-[dev-dependencies]
+errorset = { version = "1.0.3", optional = true }
+thiserror = { version = "1.0", optional = true }
+anyhow = { version = "1.0", optional = true }
 
 [features]
 atomic_error = ["dep:thiserror", "dep:anyhow"]
 errorset = ["dep:errorset", "atomic_error"]
+
+[dev-dependencies]
+smarterr = { path = ".", features = ["errorset"] }
 
 [workspace]
 exclude = ["errorset"]
