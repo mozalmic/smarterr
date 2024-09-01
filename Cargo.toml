@@ -17,11 +17,15 @@ keywords = ["error", "smart", "library", "set"]
 
 [dependencies]
 errorset = { version = "1.0.0", optional = true }
+thiserror = { version = "1.0.63", optional = true }
+anyhow = { version = "1.0.86", optional = true }
 
 [dev-dependencies]
+errorset = { version = "1.0.0" }
 
 [features]
-errorset = ["dep:errorset"]
+atomic_error = ["dep:thiserror", "dep:anyhow"]
+errorset = ["dep:errorset", "atomic_error"]
 
 [workspace]
 exclude = ["errorset"]

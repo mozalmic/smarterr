@@ -53,7 +53,9 @@ dependencies = [
 name = "smarterr"
 version = "1.0.0"
 dependencies = [
+ "anyhow",
  "errorset",
+ "thiserror",
 ]
 
 [[package]]
