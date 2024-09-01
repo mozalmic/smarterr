@@ -112,6 +112,9 @@ fn process_fn(args: &ErrorsetArgs, item_fn: &ItemFn) -> Option<Output> {
                     } else if let Some(syn::GenericArgument::Type(Type::Paren(_paren))) = params.args.iter().last() {
                         // If the second argument is dfined as `(Error1)`, it does not determined as a tuple, just leave it as is
                         return None;
+                    } else if let Some(syn::GenericArgument::Type(Type::Path(_path))) = params.args.iter().last() {
+                        // If the second argument is a regular type, just leave it as is
+                        return None;
                     } else {
                         panic!("Expected the second generic argument to be a tuple");
                     }
