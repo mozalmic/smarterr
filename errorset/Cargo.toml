@@ -1,6 +1,6 @@
 [package]
 name = "errorset"
-version = "1.0.5"
+version = "1.0.6"
 authors = ["Mike Mozal"]
 edition = "2021"
 

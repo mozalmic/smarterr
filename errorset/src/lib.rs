@@ -227,7 +227,7 @@ fn handle_impl_block(args: &ErrorsetArgs, item_impl: ItemImpl) -> TokenStream {
 
             let item_fn = ItemFn {
                 attrs: new_attrs,
-                vis: syn::Visibility::Inherited,
+                vis: method.vis.clone(),
                 sig: method.sig.clone(),
                 block: Box::new(method.block.clone()),
             };
