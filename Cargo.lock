@@ -10,25 +10,25 @@ checksum = "e16d2d3311acee920a9eb8d33b8cbc1787ce4a264e85f964c2404b969bdcd487"
 
 [[package]]
 name = "convert_case"
-version = "0.6.0"
+version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ec182b0ca2f35d8fc196cf3404988fd8b8c739a4d270ff118a398feb0cbec1ca"
+checksum = "baaaa0ecca5b51987b9423ccdc971514dd8b0bb7b4060b983d3664dad3f1f89f"
 dependencies = [
  "unicode-segmentation",
 ]
 
 [[package]]
 name = "errorset"
-version = "1.0.6"
+version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c63b694e2b0b0f5b6502368c70cbe2c6a5397e8287985b76620915ce80956ff3"
+checksum = "6204454e9348e791a1ac26656f4326c2bfd3daecf444b7e753b78a0f25f08807"
 dependencies = [
  "anyhow",
  "convert_case",
  "proc-macro2",
  "quote",
  "syn",
- "thiserror 1.0.63",
+ "thiserror",
 ]
 
 [[package]]
@@ -56,7 +56,7 @@ dependencies = [
  "anyhow",
  "errorset",
  "smarterr",
- "thiserror 2.0.12",
+ "thiserror",
 ]
 
 [[package]]
@@ -72,31 +72,11 @@ dependencies = [
 
 [[package]]
 name = "thiserror"
-version = "1.0.63"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c0342370b38b6a11b6cc11d6a805569958d54cfa061a29969c3b5ce2ea405724"
-dependencies = [
- "thiserror-impl 1.0.63",
-]
-
-[[package]]
-name = "thiserror"
 version = "2.0.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "567b8a2dae586314f7be2a752ec7474332959c6460e02bde30d702a66d488708"
 dependencies = [
- "thiserror-impl 2.0.12",
-]
-
-[[package]]
-name = "thiserror-impl"
-version = "1.0.63"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a4558b58466b9ad7ca0f102865eccc95938dca1a74a856f2b57b6629050da261"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
+ "thiserror-impl",
 ]
 
 [[package]]
