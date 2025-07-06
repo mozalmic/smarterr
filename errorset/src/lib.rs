@@ -7,14 +7,15 @@ use core::panic;
 
 use convert_case::{Case, Casing};
 use proc_macro::TokenStream;
-use quote::{format_ident, quote};
+use proc_macro2::Span;
+use quote::quote;
+use std::collections::HashSet;
 use syn::{
     parse::{Parse, ParseStream, Result},
     parse_macro_input,
     punctuated::Punctuated,
     token::PathSep,
-    Ident, ImplItem, ImplItemFn, ItemFn, ItemImpl, PathArguments, PathSegment, ReturnType, Token, Type, TypePath,
-    Visibility,
+    Ident, ImplItemFn, ItemFn, ItemImpl, PathArguments, PathSegment, ReturnType, Token, Type, TypePath, Visibility,
 };
 
 struct ErrorsetArgs {
@@ -57,31 +58,37 @@ struct Output {
     fn_def: proc_macro2::TokenStream,
 }
 
-fn process_fn(args: &ErrorsetArgs, item_fn: &ItemFn) -> Option<Output> {
+fn process_fn(args: &ErrorsetArgs, item_fn: &ItemFn) -> Result<Option<Output>> {
     // Extract the function name and convert it to camel-case for the enum name
     let fn_name = &item_fn.sig.ident;
-    let enum_name = format_ident!("{}Errors", fn_name.to_string().to_case(Case::Pascal));
+    let enum_name = Ident::new(
+        &format!("{}Errors", fn_name.to_string().to_case(Case::Pascal)),
+        Span::call_site(),
+    );
 
     // Extract the return type from the function signature
     let output_type = match &item_fn.sig.output {
         ReturnType::Type(_, ty) => ty,
-        _ => panic!("Function must have a valid return type"),
+        _ => {
+            return Err(syn::Error::new_spanned(
+                &item_fn.sig.output,
+                "Function must have a valid return type",
+            ))
+        }
     };
-    // Extract the function attributes, visibility, generics, inputs, and body
-    let fn_body = &item_fn.block;
-    let fn_inputs = &item_fn.sig.inputs;
-    let fn_vis = &item_fn.vis;
-    let fn_attrs = &item_fn.attrs;
-    let fn_generics = &item_fn.sig.generics;
 
-    // Ensure the return type is a generic with 2 parameters and the last one is tuple,
-    // like SomeObject<_, (Error1, Error2, ...)>
     let (new_return_type, err_types) = if let Type::Path(TypePath { path, .. }) = &**output_type {
         if let Some(last_segment) = path.segments.last() {
             if let PathArguments::AngleBracketed(ref params) = last_segment.arguments {
-                if params.args.len() == 2 {
-                    if let Some(syn::GenericArgument::Type(Type::Tuple(tuple))) = params.args.iter().last() {
-                        // Reconstruct path w/o generic arguments
+                if params.args.len() != 2 {
+                    return Err(syn::Error::new_spanned(
+                        &params.args,
+                        "Expected exactly 2 generic arguments",
+                    ));
+                }
+
+                match params.args.iter().nth(1).unwrap() {
+                    syn::GenericArgument::Type(Type::Tuple(tuple)) => {
                         let mut punctuated = Punctuated::<PathSegment, PathSep>::new();
                         for seg in path.segments.iter() {
                             punctuated.push_value(seg.ident.clone().into());
@@ -109,47 +116,63 @@ fn process_fn(args: &ErrorsetArgs, item_fn: &ItemFn) -> Option<Output> {
                         };
                         let err_types = tuple.elems.clone();
                         (new_return_type, err_types)
-                    } else if let Some(syn::GenericArgument::Type(Type::Paren(_paren))) = params.args.iter().last() {
-                        // If the second argument is dfined as `(Error1)`, it does not determined as a tuple, just leave it as is
-                        return None;
-                    } else if let Some(syn::GenericArgument::Type(Type::Path(_path))) = params.args.iter().last() {
-                        // If the second argument is a regular type, just leave it as is
-                        return None;
-                    } else {
-                        panic!("Expected the second generic argument to be a tuple");
                     }
-                } else {
-                    panic!("Expected exactly 2 generic arguments");
+                    syn::GenericArgument::Type(Type::Paren(_)) | syn::GenericArgument::Type(Type::Path(_)) => {
+                        // If the second argument is defined as `(Error1)`, it does not determined as a tuple, just leave it as is
+                        // The same if the second argument is a regular type
+                        return Ok(None);
+                    }
+                    other => {
+                        return Err(syn::Error::new_spanned(
+                            other,
+                            "Expected the second generic argument to be a tuple",
+                        ));
+                    }
                 }
             } else {
-                panic!("Expected angle-bracketed arguments in the generic type");
+                return Err(syn::Error::new_spanned(
+                    last_segment,
+                    "Expected angle-bracketed generic arguments",
+                ));
             }
         } else {
-            panic!("Expected a valid type path for the generic type");
+            return Err(syn::Error::new_spanned(
+                path,
+                "Expected a valid type path for the generic type",
+            ));
         }
     } else {
-        panic!("Function must return a generic type with 2 parameters");
+        return Err(syn::Error::new_spanned(
+            output_type,
+            "Function must return a generic type with 2 parameters",
+        ));
     };
 
     // Generate enum variants for each error type
-    let enum_variants = err_types.iter().map(|ty| {
-        // get the last part in `ty` path
-        let ty_name = match ty {
-            Type::Path(TypePath { path, .. }) => path.segments.last().unwrap().ident.clone(),
-            _ => panic!("Expected a type path"),
-        };
-        quote! {
-            #[error(transparent)]
-            #ty_name(#[from] #ty),
-        }
-    });
+    let mut seen = HashSet::new();
+    let enum_variants = err_types
+        .iter()
+        .filter(|ty| match ty {
+            Type::Path(TypePath { path, .. }) => seen.insert(path.segments.last().unwrap().ident.to_string()),
+            _ => true,
+        })
+        .map(|ty| {
+            let ty_name = match ty {
+                Type::Path(TypePath { path, .. }) => path.segments.last().unwrap().ident.clone(),
+                _ => return quote! {}, // skip invalid
+            };
+            quote! {
+                #[error(transparent)]
+                #ty_name(#[from] #ty),
+            }
+        });
 
     // Generate the enum definition
     let enum_vis = if args.module.is_some() {
         // use pub visibility for the enum if it's inside a module
         syn::Visibility::Public(Default::default())
     } else {
-        fn_vis.clone()
+        item_fn.vis.clone()
     };
     let enum_def = quote! {
         #[derive(::thiserror::Error, Debug)]
@@ -158,68 +181,74 @@ fn process_fn(args: &ErrorsetArgs, item_fn: &ItemFn) -> Option<Output> {
         }
     };
 
+    let fn_sig = &item_fn.sig;
+    let fn_attrs = &item_fn.attrs;
+    let fn_vis = &item_fn.vis;
+    let fn_body = &item_fn.block;
+
+    let mut new_sig = fn_sig.clone();
+    new_sig.output = syn::parse2(quote! { -> #new_return_type }).unwrap();
+
     // Generate the modified function with the new return type
     let new_fn = quote! {
         #(#fn_attrs)*
-        #fn_vis fn #fn_name #fn_generics(#fn_inputs) -> #new_return_type
+        #fn_vis #new_sig
         #fn_body
     };
 
-    Some(Output { enum_def: enum_def, fn_def: new_fn })
+    Ok(Some(Output { enum_def, fn_def: new_fn }))
 }
 
 fn handle_function(args: &ErrorsetArgs, item_fn: ItemFn) -> TokenStream {
-    if let Some(Output { enum_def, fn_def }) = process_fn(args, &item_fn) {
-        // Combine the enum definition and the modified function
-        let output = if let Some(module) = &args.module {
-            let vis = &args.visibility;
-            quote! {
-                #vis mod #module {
-                    use super::*;
-                    #enum_def
+    match process_fn(args, &item_fn) {
+        Ok(Some(Output { enum_def, fn_def })) => {
+            if let Some(module) = &args.module {
+                let vis = &args.visibility;
+                quote! {
+                    #vis mod #module {
+                        use super::*;
+                        #enum_def
+                    }
+                    #fn_def
                 }
-                #fn_def
+            } else {
+                quote! {
+                    #enum_def
+                    #fn_def
+                }
             }
-        } else {
-            quote! {
-                #enum_def
-                #fn_def
-            }
-        };
-
-        output.into()
-    } else {
-        quote! {
-            #item_fn
         }
-        .into()
+        Ok(None) => quote! { #item_fn },
+        Err(e) => e.to_compile_error(),
     }
+    .into()
 }
 
 fn handle_impl_block(args: &ErrorsetArgs, item_impl: ItemImpl) -> TokenStream {
-    let mut new_items: Vec<ImplItem> = Vec::new();
-    let mut new_enums: Vec<proc_macro2::TokenStream> = Vec::new();
+    let mut new_items = Vec::new();
+    let mut new_enums = Vec::new();
 
     for item in item_impl.items {
         if let syn::ImplItem::Fn(method) = &item {
-            let mut new_attrs = vec![];
+            let mut new_attrs = Vec::new();
             let mut marked = false;
-            // check if `#[errorset]` is applied to the function
-            // collecting other to the new_attrs (so `errorset` will be removed)
-            // if `#[errorset]` is not applied, just add the function to the new_items
-            // otherwice, check if errorset does not contain module definition
+
             for attr in &method.attrs {
                 if attr.path().is_ident("errorset") {
                     if attr.meta.require_path_only().is_err() {
-                        panic!(
-                            "errorset attribute must have no arguments when applied to a function inside an impl block"
-                        );
+                        return syn::Error::new_spanned(
+                            attr,
+                            "errorset attribute must not have arguments inside impl blocks",
+                        )
+                        .to_compile_error()
+                        .into();
                     }
                     marked = true;
                 } else {
                     new_attrs.push(attr.clone());
                 }
             }
+
             if !marked {
                 new_items.push(item);
                 continue;
@@ -231,13 +260,15 @@ fn handle_impl_block(args: &ErrorsetArgs, item_impl: ItemImpl) -> TokenStream {
                 sig: method.sig.clone(),
                 block: Box::new(method.block.clone()),
             };
-            if let Some(Output { enum_def, fn_def }) = process_fn(args, &item_fn) {
-                // Convert fn_def to ImplItem::Fn
-                let impl_item = syn::parse2::<ImplItemFn>(fn_def.into()).unwrap();
-                new_items.push(impl_item.into());
-                new_enums.push(enum_def);
-            } else {
-                new_items.push(item);
+
+            match process_fn(args, &item_fn) {
+                Ok(Some(Output { enum_def, fn_def })) => {
+                    let impl_item = syn::parse2::<ImplItemFn>(fn_def).expect("Invalid method reparse");
+                    new_items.push(impl_item.into());
+                    new_enums.push(enum_def);
+                }
+                Ok(None) => new_items.push(item),
+                Err(e) => return e.to_compile_error().into(),
             }
         } else {
             new_items.push(item);
@@ -246,7 +277,7 @@ fn handle_impl_block(args: &ErrorsetArgs, item_impl: ItemImpl) -> TokenStream {
 
     let new_impl_block = ItemImpl { items: new_items, ..item_impl };
 
-    let output = if let Some(module) = &args.module {
+    if let Some(module) = &args.module {
         // create module if new_enums is not empty
         // otherwise, just add new_impl_block
         if new_enums.is_empty() {
@@ -268,7 +299,6 @@ fn handle_impl_block(args: &ErrorsetArgs, item_impl: ItemImpl) -> TokenStream {
             #(#new_enums)*
             #new_impl_block
         }
-    };
-
-    output.into()
+    }
+    .into()
 }
