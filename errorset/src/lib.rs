@@ -3,24 +3,38 @@
 
 extern crate proc_macro;
 
-use core::panic;
-
 use convert_case::{Case, Casing};
 use proc_macro::TokenStream;
 use proc_macro2::Span;
-use quote::quote;
-use std::collections::HashSet;
+use quote::{format_ident, quote, ToTokens};
+use std::collections::{HashMap, HashSet};
 use syn::{
+    braced, bracketed, parenthesized,
     parse::{Parse, ParseStream, Result},
     parse_macro_input,
     punctuated::Punctuated,
     token::PathSep,
-    Ident, ImplItemFn, ItemFn, ItemImpl, PathArguments, PathSegment, ReturnType, Token, Type, TypePath, Visibility,
+    Ident, ImplItemFn, ItemFn, ItemImpl, LitInt, Path, PathArguments, PathSegment, ReturnType, Token, Type, TypePath,
+    Visibility,
 };
+
+#[derive(Clone)]
+struct Source {
+    ty: TypePath,
+    descriptor: Path,
+    mappings: Vec<(Ident, Ident)>,
+}
+
+enum DescriptorExport {
+    Default,
+    Named(Ident),
+}
 
 struct ErrorsetArgs {
     visibility: Visibility,
     module: Option<Ident>,
+    export: Option<DescriptorExport>,
+    sources: Vec<Source>,
 }
 
 impl Parse for ErrorsetArgs {
@@ -37,7 +51,72 @@ impl Parse for ErrorsetArgs {
             module = Some(mod_name);
         }
 
-        Ok(ErrorsetArgs { visibility, module })
+        let mut export = None;
+        let mut sources = Vec::new();
+        while !input.is_empty() {
+            if input.peek(Token![,]) {
+                input.parse::<Token![,]>()?;
+            }
+            let option: Ident = input.parse()?;
+            match option.to_string().as_str() {
+                "export" => {
+                    if export.is_some() {
+                        return Err(syn::Error::new_spanned(option, "duplicate export option"));
+                    }
+                    export = Some(if input.peek(syn::token::Paren) {
+                        let content;
+                        parenthesized!(content in input);
+                        let name = content.parse()?;
+                        if !content.is_empty() {
+                            return Err(content.error("expected one descriptor name"));
+                        }
+                        DescriptorExport::Named(name)
+                    } else {
+                        DescriptorExport::Default
+                    });
+                }
+                "from" => {
+                    let content;
+                    parenthesized!(content in input);
+                    if content.is_empty() {
+                        return Err(content.error("from requires at least one source set"));
+                    }
+                    while !content.is_empty() {
+                        let ty: TypePath = content.parse()?;
+                        let descriptor = if content.peek(Token![=>]) {
+                            content.parse::<Token![=>]>()?;
+                            content.parse()?
+                        } else {
+                            let mut path = ty.path.clone();
+                            let last = path.segments.last_mut().unwrap();
+                            last.ident = format_ident!("{}Descriptor", last.ident);
+                            last.arguments = PathArguments::None;
+                            path
+                        };
+                        let mut mappings = Vec::new();
+                        if content.peek(syn::token::Brace) {
+                            let map;
+                            braced!(map in content);
+                            while !map.is_empty() {
+                                let source = map.parse()?;
+                                map.parse::<Token![=>]>()?;
+                                mappings.push((source, map.parse()?));
+                                if !map.is_empty() {
+                                    map.parse::<Token![,]>()?;
+                                }
+                            }
+                        }
+                        sources.push(Source { ty, descriptor, mappings });
+                        if !content.is_empty() {
+                            content.parse::<Token![,]>()?;
+                        }
+                    }
+                }
+                _ => return Err(syn::Error::new_spanned(option, "expected export or from(...)")),
+            }
+        }
+
+        Ok(ErrorsetArgs { visibility, module, export, sources })
     }
 }
 
@@ -49,7 +128,9 @@ pub fn errorset(attr: TokenStream, item: TokenStream) -> TokenStream {
     match input {
         syn::Item::Fn(item_fn) => handle_function(&args, item_fn),
         syn::Item::Impl(item_impl) => handle_impl_block(&args, item_impl),
-        _ => panic!("errorset can only be applied to functions or impl blocks"),
+        _ => syn::Error::new_spanned(input, "errorset can only be applied to functions or impl blocks")
+            .to_compile_error()
+            .into(),
     }
 }
 
@@ -58,7 +139,7 @@ struct Output {
     fn_def: proc_macro2::TokenStream,
 }
 
-fn process_fn(args: &ErrorsetArgs, item_fn: &ItemFn) -> Result<Option<Output>> {
+fn process_fn(args: &ErrorsetArgs, item_fn: &ItemFn, impl_generics: Option<&syn::Generics>) -> Result<Option<Output>> {
     // Extract the function name and convert it to camel-case for the enum name
     let fn_name = &item_fn.sig.ident;
     let enum_name = Ident::new(
@@ -98,7 +179,7 @@ fn process_fn(args: &ErrorsetArgs, item_fn: &ItemFn) -> Result<Option<Output>> {
                             }
                         }
                         let new_path = syn::Path {
-                            leading_colon: path.leading_colon.clone(),
+                            leading_colon: path.leading_colon,
                             segments: punctuated,
                         };
 
@@ -118,6 +199,12 @@ fn process_fn(args: &ErrorsetArgs, item_fn: &ItemFn) -> Result<Option<Output>> {
                         (new_return_type, err_types)
                     }
                     syn::GenericArgument::Type(Type::Paren(_)) | syn::GenericArgument::Type(Type::Path(_)) => {
+                        if args.export.is_some() || !args.sources.is_empty() {
+                            return Err(syn::Error::new_spanned(
+                                &params.args,
+                                "export/from requires an explicit tuple of error types, including a trailing comma for one error",
+                            ));
+                        }
                         // If the second argument is defined as `(Error1)`, it does not determined as a tuple, just leave it as is
                         // The same if the second argument is a regular type
                         return Ok(None);
@@ -148,24 +235,38 @@ fn process_fn(args: &ErrorsetArgs, item_fn: &ItemFn) -> Result<Option<Output>> {
         ));
     };
 
-    // Generate enum variants for each error type
-    let mut seen = HashSet::new();
-    let enum_variants = err_types
-        .iter()
-        .filter(|ty| match ty {
-            Type::Path(TypePath { path, .. }) => seen.insert(path.segments.last().unwrap().ident.to_string()),
-            _ => true,
-        })
-        .map(|ty| {
-            let ty_name = match ty {
-                Type::Path(TypePath { path, .. }) => path.segments.last().unwrap().ident.clone(),
-                _ => return quote! {}, // skip invalid
-            };
-            quote! {
-                #[error(transparent)]
-                #ty_name(#[from] #ty),
+    let members = members(&err_types)?;
+    if args.export.is_some() || !args.sources.is_empty() {
+        reject_generic_errors(&item_fn.sig.generics, &members)?;
+        if let Some(generics) = impl_generics {
+            reject_generic_errors(generics, &members)?;
+        }
+        let mut sources = HashSet::new();
+        for source in &args.sources {
+            if source.ty.qself.is_some()
+                || source
+                    .ty
+                    .path
+                    .segments
+                    .iter()
+                    .any(|segment| !matches!(segment.arguments, PathArguments::None))
+            {
+                return Err(syn::Error::new_spanned(
+                    &source.ty,
+                    "generic and associated source sets are not supported",
+                ));
             }
-        });
+            if !sources.insert(source.ty.to_token_stream().to_string()) {
+                return Err(syn::Error::new_spanned(&source.ty, "duplicate source set"));
+            }
+        }
+    }
+    let enum_variants = members.iter().map(|(name, ty)| {
+        quote! {
+            #[error(transparent)]
+            #name(#[from] #ty),
+        }
+    });
 
     // Generate the enum definition
     let enum_vis = if args.module.is_some() {
@@ -174,11 +275,29 @@ fn process_fn(args: &ErrorsetArgs, item_fn: &ItemFn) -> Result<Option<Output>> {
     } else {
         item_fn.vis.clone()
     };
+    let cfgs: Vec<_> = item_fn.attrs.iter().filter(|a| a.path().is_ident("cfg")).collect();
+    let metadata = metadata(args, &enum_name, &enum_vis, &members, &cfgs);
+    let conversions = args.sources.iter().map(|source| {
+        let descriptor = &source.descriptor;
+        let ty = &source.ty;
+        let mappings = source.mappings.iter().map(|(s, t)| quote! { #s => #t, });
+        let targets = members.iter().map(|(name, ty)| quote! { #name : #ty, });
+        quote! {
+            #(#cfgs)*
+            #descriptor!(::smarterr::errorset::__compose, [
+                #ty; #enum_name; #enum_vis;
+                [#(#targets)*] [#(#mappings)*]
+            ]);
+        }
+    });
     let enum_def = quote! {
+        #(#cfgs)*
         #[derive(::thiserror::Error, Debug)]
         #enum_vis enum #enum_name {
             #(#enum_variants)*
         }
+        #metadata
+        #(#conversions)*
     };
 
     let fn_sig = &item_fn.sig;
@@ -199,8 +318,274 @@ fn process_fn(args: &ErrorsetArgs, item_fn: &ItemFn) -> Result<Option<Output>> {
     Ok(Some(Output { enum_def, fn_def: new_fn }))
 }
 
+fn members(types: &Punctuated<Type, Token![,]>) -> Result<Vec<(Ident, Type)>> {
+    let mut seen = HashSet::new();
+    let mut entries = Vec::new();
+    let mut counts = HashMap::new();
+    for ty in types {
+        let Type::Path(TypePath { qself: None, path }) = ty else {
+            return Err(syn::Error::new_spanned(ty, "error members must be named type paths"));
+        };
+        if seen.insert(ty.to_token_stream().to_string()) {
+            let name = path.segments.last().unwrap().ident.clone();
+            *counts.entry(name.to_string()).or_insert(0usize) += 1;
+            entries.push((name, ty.clone()));
+        }
+    }
+    let mut names = HashSet::new();
+    for (name, ty) in &mut entries {
+        if counts[&name.to_string()] > 1 {
+            let Type::Path(TypePath { path, .. }) = ty else {
+                unreachable!()
+            };
+            let qualified = path
+                .segments
+                .iter()
+                .map(|segment| segment.ident.to_string().to_case(Case::Pascal))
+                .collect::<String>();
+            *name = Ident::new(&qualified, name.span());
+        }
+        if !names.insert(name.to_string()) {
+            return Err(syn::Error::new_spanned(
+                ty,
+                "ambiguous variant name; give these types distinct named aliases",
+            ));
+        }
+    }
+    Ok(entries)
+}
+
+fn reject_generic_errors(generics: &syn::Generics, members: &[(Ident, Type)]) -> Result<()> {
+    let mut parameters: HashSet<String> = generics
+        .params
+        .iter()
+        .map(|p| match p {
+            syn::GenericParam::Type(p) => p.ident.to_string(),
+            syn::GenericParam::Lifetime(p) => p.lifetime.ident.to_string(),
+            syn::GenericParam::Const(p) => p.ident.to_string(),
+        })
+        .collect();
+    parameters.insert("Self".into());
+    struct GenericUse<'a> {
+        parameters: &'a HashSet<String>,
+        found: bool,
+    }
+    impl<'ast> syn::visit::Visit<'ast> for GenericUse<'_> {
+        fn visit_path(&mut self, path: &'ast Path) {
+            if path.leading_colon.is_none()
+                && path
+                    .segments
+                    .first()
+                    .is_some_and(|s| self.parameters.contains(&s.ident.to_string()))
+            {
+                self.found = true;
+            }
+            syn::visit::visit_path(self, path);
+        }
+
+        fn visit_lifetime(&mut self, lifetime: &'ast syn::Lifetime) {
+            if self.parameters.contains(&lifetime.ident.to_string()) {
+                self.found = true;
+            }
+        }
+    }
+    for (_, ty) in members {
+        let mut usage = GenericUse { parameters: &parameters, found: false };
+        syn::visit::Visit::visit_type(&mut usage, ty);
+        if usage.found {
+            return Err(syn::Error::new_spanned(ty, "composition requires concrete error types; function/impl generic parameters and Self are not supported"));
+        }
+    }
+    Ok(())
+}
+
+fn metadata(
+    args: &ErrorsetArgs,
+    name: &Ident,
+    vis: &Visibility,
+    members: &[(Ident, Type)],
+    cfgs: &[&syn::Attribute],
+) -> proc_macro2::TokenStream {
+    let Some(export) = &args.export else { return quote! {} };
+    let descriptor = match export {
+        DescriptorExport::Default => format_ident!("{}Descriptor", name),
+        DescriptorExport::Named(name) => name.clone(),
+    };
+    let internal = format_ident!("__errorset_{}", descriptor);
+    let member_impls = members.iter().enumerate().map(|(index, (_, ty))| {
+        quote! {
+            #(#cfgs)*
+            impl ::smarterr::ErrorSetMember<#index> for #name {
+                type Error = #ty;
+            }
+        }
+    });
+    let variants = members
+        .iter()
+        .enumerate()
+        .map(|(index, (variant, _))| quote! { #variant #index, });
+    quote! {
+        #(#member_impls)*
+        #(#cfgs)*
+        #[doc(hidden)]
+        #[macro_export]
+        macro_rules! #internal {
+            ($callback:path, [$($context:tt)*]) => {
+                $callback! { [$($context)*] [#(#variants)*] }
+            };
+        }
+        #(#cfgs)*
+        #[doc(hidden)]
+        #vis use #internal as #descriptor;
+    }
+}
+
+struct Composition {
+    source: TypePath,
+    target: Ident,
+    visibility: Visibility,
+    targets: Vec<(Ident, Type)>,
+    mappings: Vec<(Ident, Ident)>,
+    variants: Vec<(Ident, LitInt)>,
+}
+
+impl Parse for Composition {
+    fn parse(input: ParseStream) -> Result<Self> {
+        let context;
+        bracketed!(context in input);
+        let source = context.parse()?;
+        context.parse::<Token![;]>()?;
+        let target = context.parse()?;
+        context.parse::<Token![;]>()?;
+        let visibility = context.parse()?;
+        context.parse::<Token![;]>()?;
+        let target_list;
+        bracketed!(target_list in context);
+        let mut targets = Vec::new();
+        while !target_list.is_empty() {
+            let name = target_list.parse()?;
+            target_list.parse::<Token![:]>()?;
+            targets.push((name, target_list.parse()?));
+            target_list.parse::<Token![,]>()?;
+        }
+        let mapping_list;
+        bracketed!(mapping_list in context);
+        let mut mappings = Vec::new();
+        while !mapping_list.is_empty() {
+            let name = mapping_list.parse()?;
+            mapping_list.parse::<Token![=>]>()?;
+            mappings.push((name, mapping_list.parse()?));
+            mapping_list.parse::<Token![,]>()?;
+        }
+        if !context.is_empty() {
+            return Err(context.error("unexpected composition metadata"));
+        }
+        let variant_list;
+        bracketed!(variant_list in input);
+        let mut variants = Vec::new();
+        while !variant_list.is_empty() {
+            variants.push((variant_list.parse()?, variant_list.parse()?));
+            variant_list.parse::<Token![,]>()?;
+        }
+        Ok(Self {
+            source,
+            target,
+            visibility,
+            targets,
+            mappings,
+            variants,
+        })
+    }
+}
+
+/// Callback for the version-one descriptor protocol.
+#[doc(hidden)]
+#[proc_macro]
+pub fn __compose(input: TokenStream) -> TokenStream {
+    let composition = parse_macro_input!(input as Composition);
+    match compose(composition) {
+        Ok(output) => output,
+        Err(error) => error.to_compile_error(),
+    }
+    .into()
+}
+
+fn compose(input: Composition) -> Result<proc_macro2::TokenStream> {
+    let Composition {
+        source,
+        target,
+        visibility,
+        targets,
+        mappings,
+        variants,
+    } = input;
+    if source.qself.is_none() && source.path.get_ident() == Some(&target) {
+        return Err(syn::Error::new_spanned(source, "a set cannot convert from itself"));
+    }
+    let target_names: HashSet<_> = targets.iter().map(|(name, _)| name.to_string()).collect();
+    let source_names: HashSet<_> = variants.iter().map(|(name, _)| name.to_string()).collect();
+    let mut explicit = HashMap::new();
+    for (s, t) in mappings {
+        if !source_names.contains(&s.to_string()) {
+            return Err(syn::Error::new_spanned(s, "mapping names an unknown source variant"));
+        }
+        if !target_names.contains(&t.to_string()) {
+            return Err(syn::Error::new_spanned(t, "mapping names an unknown target variant"));
+        }
+        if explicit.insert(s.to_string(), t).is_some() {
+            return Err(syn::Error::new_spanned(s, "duplicate source variant mapping"));
+        }
+    }
+    let source_name = &source.path.segments.last().unwrap().ident;
+    let remainder = format_ident!("{}For{}", source_name, target);
+    let mut remainder_variants = Vec::new();
+    let mut split_arms = Vec::new();
+    let mut from_arms = Vec::new();
+    for (variant, index) in variants {
+        let destination = explicit
+            .get(&variant.to_string())
+            .cloned()
+            .or_else(|| target_names.contains(&variant.to_string()).then(|| variant.clone()));
+        if let Some(destination) = destination {
+            // Constructing the target variant makes rustc check actual type equality.
+            split_arms.push(quote! { Self::#variant(e) => Err(#target::#destination(e)), });
+            from_arms.push(quote! { #source::#variant(e) => Self::#destination(e), });
+        } else {
+            remainder_variants.push(quote! {
+                #[error(transparent)]
+                #variant(<#source as ::smarterr::ErrorSetMember<#index>>::Error),
+            });
+            split_arms.push(quote! { Self::#variant(e) => Ok(#remainder::#variant(e)), });
+        }
+    }
+    let from = if remainder_variants.is_empty() {
+        quote! {
+            impl ::core::convert::From<#source> for #target {
+                fn from(error: #source) -> Self {
+                    match error { #(#from_arms)* }
+                }
+            }
+        }
+    } else {
+        quote! {}
+    };
+    Ok(quote! {
+        #[derive(::thiserror::Error, Debug)]
+        #visibility enum #remainder {
+            #(#remainder_variants)*
+        }
+        impl ::smarterr::SplitInto<#target> for #source {
+            type Remainder = #remainder;
+            fn split_into(self) -> ::core::result::Result<Self::Remainder, #target> {
+                match self { #(#split_arms)* }
+            }
+        }
+        #from
+    })
+}
+
 fn handle_function(args: &ErrorsetArgs, item_fn: ItemFn) -> TokenStream {
-    match process_fn(args, &item_fn) {
+    match process_fn(args, &item_fn, None) {
         Ok(Some(Output { enum_def, fn_def })) => {
             if let Some(module) = &args.module {
                 let vis = &args.visibility;
@@ -225,6 +610,25 @@ fn handle_function(args: &ErrorsetArgs, item_fn: ItemFn) -> TokenStream {
 }
 
 fn handle_impl_block(args: &ErrorsetArgs, item_impl: ItemImpl) -> TokenStream {
+    if args.export.is_some() || !args.sources.is_empty() {
+        return syn::Error::new_spanned(
+            &item_impl,
+            "place export/from on individual methods; keep the module option on the impl block",
+        )
+        .to_compile_error()
+        .into();
+    }
+    if item_impl.trait_.is_some()
+        && item_impl.items.iter().any(|item| {
+            matches!(item, syn::ImplItem::Fn(method) if method.attrs.iter().any(|a| {
+                a.path().is_ident("errorset") && !matches!(a.meta, syn::Meta::Path(_))
+            }))
+        })
+    {
+        return syn::Error::new_spanned(&item_impl, "composition on trait implementations is not supported")
+            .to_compile_error()
+            .into();
+    }
     let mut new_items = Vec::new();
     let mut new_enums = Vec::new();
 
@@ -232,16 +636,36 @@ fn handle_impl_block(args: &ErrorsetArgs, item_impl: ItemImpl) -> TokenStream {
         if let syn::ImplItem::Fn(method) = &item {
             let mut new_attrs = Vec::new();
             let mut marked = false;
+            let mut method_args = ErrorsetArgs {
+                visibility: args.visibility.clone(),
+                module: args.module.clone(),
+                export: None,
+                sources: Vec::new(),
+            };
 
             for attr in &method.attrs {
                 if attr.path().is_ident("errorset") {
-                    if attr.meta.require_path_only().is_err() {
-                        return syn::Error::new_spanned(
-                            attr,
-                            "errorset attribute must not have arguments inside impl blocks",
-                        )
-                        .to_compile_error()
-                        .into();
+                    if marked {
+                        return syn::Error::new_spanned(attr, "duplicate errorset attribute")
+                            .to_compile_error()
+                            .into();
+                    }
+                    if let syn::Meta::List(_) = &attr.meta {
+                        let options = match attr.parse_args::<ErrorsetArgs>() {
+                            Ok(options) => options,
+                            Err(error) => return error.to_compile_error().into(),
+                        };
+                        if options.module.is_some() || !matches!(options.visibility, Visibility::Inherited) {
+                            return syn::Error::new_spanned(attr, "place module/visibility options on the impl block")
+                                .to_compile_error()
+                                .into();
+                        }
+                        method_args.export = options.export;
+                        method_args.sources = options.sources;
+                    } else if !matches!(attr.meta, syn::Meta::Path(_)) {
+                        return syn::Error::new_spanned(attr, "expected errorset or errorset(...)")
+                            .to_compile_error()
+                            .into();
                     }
                     marked = true;
                 } else {
@@ -261,7 +685,7 @@ fn handle_impl_block(args: &ErrorsetArgs, item_impl: ItemImpl) -> TokenStream {
                 block: Box::new(method.block.clone()),
             };
 
-            match process_fn(args, &item_fn) {
+            match process_fn(&method_args, &item_fn, Some(&item_impl.generics)) {
                 Ok(Some(Output { enum_def, fn_def })) => {
                     let impl_item = syn::parse2::<ImplItemFn>(fn_def).expect("Invalid method reparse");
                     new_items.push(impl_item.into());

@@ -1,0 +1,9 @@
+[package]
+name = "errorset-producer"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+smarterr = { path = "../../..", features = ["errorset"] }
+thiserror = "2.0"

@@ -1,0 +1,58 @@
+[package]
+name = "errorset-consumer"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+reader = { package = "errorset-producer", path = "../producer" }
+smarterr = { path = "../../..", features = ["errorset"] }
+thiserror = "2.0"
+
+[features]
+compile-fail = []
+
+[[bin]]
+name = "partial-question-mark"
+path = "../../ui/partial_question_mark.rs"
+required-features = ["compile-fail"]
+
+[[bin]]
+name = "incomplete-match"
+path = "../../ui/incomplete_match.rs"
+required-features = ["compile-fail"]
+
+[[bin]]
+name = "wrong-type"
+path = "../../ui/wrong_type.rs"
+required-features = ["compile-fail"]
+
+[[bin]]
+name = "unknown-mapping"
+path = "../../ui/unknown_mapping.rs"
+required-features = ["compile-fail"]
+
+[[bin]]
+name = "generic-error"
+path = "../../ui/generic_error.rs"
+required-features = ["compile-fail"]
+
+[[bin]]
+name = "non-tuple"
+path = "../../ui/non_tuple.rs"
+required-features = ["compile-fail"]
+
+[[bin]]
+name = "generic-source"
+path = "../../ui/generic_source.rs"
+required-features = ["compile-fail"]
+
+[[bin]]
+name = "private-source"
+path = "../../ui/private_source.rs"
+required-features = ["compile-fail"]
+
+[[bin]]
+name = "private-module"
+path = "../../ui/private_module.rs"
+required-features = ["compile-fail"]

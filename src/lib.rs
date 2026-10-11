@@ -5,6 +5,31 @@ use std::{rc::Rc, sync::Arc};
 #[cfg(feature = "errorset")]
 pub use errorset;
 
+/// The payload type of a generated error-set variant.
+#[doc(hidden)]
+pub trait ErrorSetMember<const INDEX: usize> {
+    type Error;
+}
+
+/// Partitions a source error set into handled and propagated errors.
+pub trait SplitInto<Target>: Sized {
+    type Remainder;
+
+    fn split_into(self) -> Result<Self::Remainder, Target>;
+}
+
+/// Provides `error.split::<Target>()` for generated conversions.
+pub trait ErrorSet: Sized {
+    fn split<Target>(self) -> Result<<Self as SplitInto<Target>>::Remainder, Target>
+    where
+        Self: SplitInto<Target>,
+    {
+        self.split_into()
+    }
+}
+
+impl<T> ErrorSet for T {}
+
 #[cfg(feature = "atomic_error")]
 #[macro_export]
 macro_rules! error {

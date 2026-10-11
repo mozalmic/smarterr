@@ -77,3 +77,49 @@ impl _SomeStruct {
     }
 }
 ```
+
+## Converting between method error sets
+
+The target method still lists its atomic errors explicitly. `from(...)` generates
+conversions; it does not add errors to that list.
+
+```rust
+use smarterr::{error, errorset::errorset, ErrorSet};
+
+error!(pub FileError {} => "File error");
+error!(pub VersionError {} => "Unsupported version");
+error!(pub CryptoError {} => "Crypto error");
+
+#[errorset(export)]
+pub fn read() -> Result<(), (FileError, VersionError, CryptoError)> {
+    Err(VersionError {}.into())
+}
+
+#[errorset(from(ReadErrors))]
+pub fn load() -> Result<(), (CryptoError,)> {
+    match read() {
+        Ok(()) => {}
+        Err(error) => match error.split::<LoadErrors>()? {
+            ReadErrorsForLoadErrors::FileError(e) => {
+                let _ = e; // handle locally
+            }
+            ReadErrorsForLoadErrors::VersionError(e) => {
+                let _ = e; // handle locally
+            }
+        },
+    }
+    Ok(())
+}
+```
+
+`split::<LoadErrors>()` returns `Result<ReadErrorsForLoadErrors, LoadErrors>`.
+Errors in the target contract go into `Err` and propagate through `?`. Excluded
+errors go into `Ok`, in an enum containing only those variants. Rust checks that
+the `match` handles all of them. There is no boxing, type erasure, or panic.
+
+If every source variant is included in the target, `From<Source>` is also
+generated, so the target can simply call `read()?`. For a partial conversion,
+that call deliberately does not compile: use `split` and handle the remainder.
+
+See the [errorset documentation](errorset/README.md#conversions-and-partial-handling)
+for modules, crates, aliases, and restrictions.
