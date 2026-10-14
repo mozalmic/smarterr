@@ -35,6 +35,19 @@ pub fn reexported(version: bool) -> Result<(), (reader::FileError, reader::Versi
     Ok(())
 }
 
+#[errorset(from(reader::PublicApiErrors))]
+pub type ApiErrors = (reader::FileError, reader::VersionError);
+
+#[errorset(from(reader::ApiErrors))]
+pub type FileErrors = (reader::FileError,);
+
+#[errorset(from(reader::ApiErrors))]
+pub fn declared_source(version: bool) -> Result<(), (reader::FileError, reader::VersionError)> {
+    let result: Result<(), reader::ApiErrors> = reader::api::read(version).map_err(Into::into);
+    result?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -64,5 +77,18 @@ mod tests {
         let error = reader::other::read().unwrap_err();
         assert_eq!(error.downcast_ref::<LocalFileError>().unwrap().code, 99);
         assert!(matches!(error.split::<ReexportedErrors>(), Err(ReexportedErrors::FileError(_))));
+    }
+
+    #[test]
+    fn named_declarations_compose_across_crates() {
+        let source: reader::ApiErrors = reader::api::read(false).unwrap_err().into();
+        let error: ApiErrors = source.into();
+        assert_eq!(error.downcast_ref::<LocalFileError>().unwrap().code, 42);
+        let source: reader::ApiErrors = reader::api::read(true).unwrap_err().into();
+        match source.split::<FileErrors>() {
+            Ok(ApiErrorsForFileErrors::VersionError(error)) => assert_eq!(error.version, 7),
+            Err(_) => panic!("expected excluded version error"),
+        }
+        assert!(matches!(declared_source(true), Err(DeclaredSourceErrors::VersionError(_))));
     }
 }

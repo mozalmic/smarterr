@@ -6,4 +6,12 @@ fn partial() -> Result<(), (reader::FileError,)> {
     Ok(())
 }
 
+#[errorset(from(reader::api::ReadErrors))]
+type NamedPartial = (reader::FileError,);
+
+fn named_partial() -> Result<(), NamedPartial> {
+    reader::api::read(true)?;
+    Ok(())
+}
+
 fn main() {}

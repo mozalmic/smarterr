@@ -43,6 +43,11 @@ path = "../../ui/non_tuple.rs"
 required-features = ["compile-fail"]
 
 [[bin]]
+name = "invalid-declarations"
+path = "../../ui/invalid_declarations.rs"
+required-features = ["compile-fail"]
+
+[[bin]]
 name = "generic-source"
 path = "../../ui/generic_source.rs"
 required-features = ["compile-fail"]

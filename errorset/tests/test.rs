@@ -24,6 +24,16 @@ mod tests {
     use super::*;
     use errorset::errorset;
 
+    #[errorset]
+    type DeclaredErrors = (Error1, Error2);
+
+    #[test]
+    fn standalone_declaration() {
+        let error: DeclaredErrors = Error2 { message: "Declared".to_owned() }.into();
+        assert!(matches!(error, DeclaredErrors::Error2(_)));
+        assert_eq!(error.to_string(), "The second error [msg=Declared]");
+    }
+
     #[errorset(pub(crate) mod errors)]
     fn error_set() -> core::result::Result<(), (Error1, Error2)> {
         let _t = "-123".parse::<u32>().map_err(|source| Error1 { data: 42, source })?;

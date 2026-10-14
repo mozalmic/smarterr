@@ -28,3 +28,8 @@ pub mod other {
 }
 
 pub use api::ReadErrors as PublicReadErrors;
+
+#[smarterr::errorset::errorset(from(api::ReadErrors, other::ReadErrors))]
+pub type ApiErrors = (FileError, VersionError);
+
+pub use ApiErrors as PublicApiErrors;

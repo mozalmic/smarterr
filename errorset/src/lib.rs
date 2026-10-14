@@ -17,7 +17,7 @@ use syn::{
     parse_macro_input,
     punctuated::Punctuated,
     token::PathSep,
-    Ident, ImplItemFn, ItemFn, ItemImpl, LitInt, Path, PathArguments, PathSegment, ReturnType, Token, Type, TypePath,
+    Ident, ImplItemFn, ItemFn, ItemImpl, ItemType, LitInt, Path, PathArguments, PathSegment, ReturnType, Token, Type, TypePath,
     Visibility,
 };
 
@@ -130,7 +130,11 @@ pub fn errorset(attr: TokenStream, item: TokenStream) -> TokenStream {
     match input {
         syn::Item::Fn(item_fn) => handle_function(&args, item_fn),
         syn::Item::Impl(item_impl) => handle_impl_block(&args, item_impl),
-        _ => syn::Error::new_spanned(input, "errorset can only be applied to functions or impl blocks")
+        syn::Item::Type(item_type) => match process_type(&args, item_type) {
+            Ok(output) => output.into(),
+            Err(error) => error.to_compile_error().into(),
+        },
+        _ => syn::Error::new_spanned(input, "errorset can only be applied to functions, impl blocks, or type declarations")
             .to_compile_error()
             .into(),
     }
@@ -200,11 +204,11 @@ fn process_fn(args: &ErrorsetArgs, item_fn: &ItemFn, impl_generics: Option<&syn:
                         let err_types = tuple.elems.clone();
                         (new_return_type, err_types)
                     }
-                    syn::GenericArgument::Type(Type::Paren(_)) | syn::GenericArgument::Type(Type::Path(_)) => {
+                    argument @ (syn::GenericArgument::Type(Type::Paren(_)) | syn::GenericArgument::Type(Type::Path(_))) => {
                         if cfg!(feature = "runtime") || args.export.is_some() || !args.sources.is_empty() {
                             return Err(syn::Error::new_spanned(
-                                &params.args,
-                                "export/from requires an explicit tuple of error types, including a trailing comma for one error",
+                                argument,
+                                "errorset requires an explicit tuple of error types; remove #[errorset] to return the atom directly, or use (Atom,) for a single-error set",
                             ));
                         }
                         // If the second argument is defined as `(Error1)`, it does not determined as a tuple, just leave it as is
@@ -243,65 +247,15 @@ fn process_fn(args: &ErrorsetArgs, item_fn: &ItemFn, impl_generics: Option<&syn:
         if let Some(generics) = impl_generics {
             reject_generic_errors(generics, &members)?;
         }
-        let mut sources = HashSet::new();
-        for source in &args.sources {
-            if source.ty.qself.is_some()
-                || source
-                    .ty
-                    .path
-                    .segments
-                    .iter()
-                    .any(|segment| !matches!(segment.arguments, PathArguments::None))
-            {
-                return Err(syn::Error::new_spanned(
-                    &source.ty,
-                    "generic and associated source sets are not supported",
-                ));
-            }
-            if !sources.insert(source.ty.to_token_stream().to_string()) {
-                return Err(syn::Error::new_spanned(&source.ty, "duplicate source set"));
-            }
-        }
     }
-    let enum_variants = members.iter().map(|(name, ty)| {
-        quote! {
-            #[error(transparent)]
-            #name(#[from] #ty),
-        }
-    });
 
-    // Generate the enum definition
     let enum_vis = if args.module.is_some() {
-        // use pub visibility for the enum if it's inside a module
         syn::Visibility::Public(Default::default())
     } else {
         item_fn.vis.clone()
     };
-    let cfgs: Vec<_> = item_fn.attrs.iter().filter(|a| a.path().is_ident("cfg")).collect();
-    let metadata = metadata(args, &enum_name, &enum_vis, &members, &cfgs);
-    let remainders = remainder_names(&args.sources, &enum_name)?;
-    let conversions = args.sources.iter().zip(&remainders).map(|(source, remainder)| {
-        let descriptor = &source.descriptor;
-        let ty = &source.ty;
-        let mappings = source.mappings.iter().map(|(s, t)| quote! { #s => #t, });
-        let targets = members.iter().map(|(name, ty)| quote! { #name : #ty, });
-        quote! {
-            #(#cfgs)*
-            #descriptor!(::smarterr::errorset::__compose, [
-                #ty; #enum_name; #enum_vis; #remainder;
-                [#(#targets)*] [#(#mappings)*]
-            ]);
-        }
-    });
-    let enum_def = quote! {
-        #(#cfgs)*
-        #[derive(::thiserror::Error, Debug)]
-        #enum_vis enum #enum_name {
-            #(#enum_variants)*
-        }
-        #metadata
-        #(#conversions)*
-    };
+    let attrs: Vec<_> = item_fn.attrs.iter().filter(|a| a.path().is_ident("cfg")).cloned().collect();
+    let enum_def = generate_set(args, &enum_name, &enum_vis, &members, &attrs)?;
 
     let fn_sig = &item_fn.sig;
     let fn_attrs = &item_fn.attrs;
@@ -319,6 +273,92 @@ fn process_fn(args: &ErrorsetArgs, item_fn: &ItemFn, impl_generics: Option<&syn:
     };
 
     Ok(Some(Output { enum_def, fn_def: new_fn }))
+}
+
+fn process_type(args: &ErrorsetArgs, item: ItemType) -> Result<proc_macro2::TokenStream> {
+    if args.module.is_some() || !matches!(args.visibility, Visibility::Inherited) {
+        return Err(syn::Error::new_spanned(
+            &item,
+            "on type declarations, use the declaration's visibility and place it in the desired module; module/visibility options are not supported",
+        ));
+    }
+    if !item.generics.params.is_empty() || item.generics.where_clause.is_some() {
+        return Err(syn::Error::new_spanned(
+            &item.generics,
+            "errorset type declarations do not support generics or where clauses; use concrete error types",
+        ));
+    }
+    let Type::Tuple(tuple) = &*item.ty else {
+        return Err(syn::Error::new_spanned(
+            &item.ty,
+            "errorset type declarations require an explicit tuple of error types; use (Atom,) for a single-error set",
+        ));
+    };
+    let mut seen = HashMap::new();
+    for (index, ty) in tuple.elems.iter().enumerate() {
+        if let Some((position, first)) = seen.insert(ty.to_token_stream().to_string(), (index + 1, ty)) {
+            let mut error = syn::Error::new_spanned(
+                ty,
+                format!("duplicate error atom at position {}; first declared at position {position}", index + 1),
+            );
+            error.combine(syn::Error::new_spanned(first, "first declaration of this error atom"));
+            return Err(error);
+        }
+    }
+    let members = members(&tuple.elems)?;
+    reject_generic_errors(&item.generics, &members)?;
+    generate_set(args, &item.ident, &item.vis, &members, &item.attrs)
+}
+
+fn generate_set(
+    args: &ErrorsetArgs,
+    enum_name: &Ident,
+    enum_vis: &Visibility,
+    members: &[(Ident, Type)],
+    attrs: &[syn::Attribute],
+) -> Result<proc_macro2::TokenStream> {
+    let mut sources = HashSet::new();
+    for source in &args.sources {
+        if source.ty.qself.is_some()
+            || source.ty.path.segments.iter().any(|segment| !matches!(segment.arguments, PathArguments::None))
+        {
+            return Err(syn::Error::new_spanned(&source.ty, "generic and associated source sets are not supported"));
+        }
+        if !sources.insert(source.ty.to_token_stream().to_string()) {
+            return Err(syn::Error::new_spanned(&source.ty, "duplicate source set"));
+        }
+    }
+    let cfgs: Vec<_> = attrs.iter().filter(|a| a.path().is_ident("cfg")).collect();
+    let enum_variants = members.iter().map(|(name, ty)| {
+        quote! {
+            #[error(transparent)]
+            #name(#[from] #ty),
+        }
+    });
+    let metadata = metadata(args, enum_name, enum_vis, members, &cfgs);
+    let remainders = remainder_names(&args.sources, enum_name)?;
+    let conversions = args.sources.iter().zip(&remainders).map(|(source, remainder)| {
+        let descriptor = &source.descriptor;
+        let ty = &source.ty;
+        let mappings = source.mappings.iter().map(|(s, t)| quote! { #s => #t, });
+        let targets = members.iter().map(|(name, ty)| quote! { #name : #ty, });
+        quote! {
+            #(#cfgs)*
+            #descriptor!(::smarterr::errorset::__compose, [
+                #ty; #enum_name; #enum_vis; #remainder;
+                [#(#targets)*] [#(#mappings)*]
+            ]);
+        }
+    });
+    Ok(quote! {
+        #(#attrs)*
+        #[derive(::thiserror::Error, Debug)]
+        #enum_vis enum #enum_name {
+            #(#enum_variants)*
+        }
+        #metadata
+        #(#conversions)*
+    })
 }
 
 fn remainder_names(sources: &[Source], target: &Ident) -> Result<Vec<Ident>> {
@@ -447,6 +487,7 @@ fn metadata(
         quote! {
             #(#cfgs)*
             #[doc(hidden)]
+            #[allow(unused_imports)]
             #vis use #internal as #descriptor;
         }
     });
@@ -477,6 +518,7 @@ fn metadata(
         }
         #(#cfgs)*
         #[doc(hidden)]
+        #[allow(unused_imports)]
         #vis use #internal as #name;
         #descriptor_alias
     }

@@ -147,6 +147,57 @@ with `pub use module::SourceErrors as PublicErrors` also carries its metadata.
 The existing `export` and `export(custom_descriptor)` options remain available
 for explicitly named descriptor aliases.
 
+## Named error sets without a placeholder function
+
+Apply `#[errorset]` to a `type` declaration to define a named set directly:
+
+```rust
+use smarterr::{error, errorset::errorset, ErrorSet};
+
+error!(pub FileError {} => "File error");
+error!(pub VersionError {} => "Unsupported version");
+
+#[errorset]
+pub fn read() -> Result<(), (FileError, VersionError)> {
+    Err(VersionError {}.into())
+}
+
+/// All errors exposed by this API.
+#[errorset(from(ReadErrors))]
+pub type ApiErrors = (FileError, VersionError);
+
+#[errorset(from(ApiErrors))]
+pub type FileOnly = (FileError,);
+
+let error: ApiErrors = read().unwrap_err().into();
+match error.split::<FileOnly>() {
+    Ok(ApiErrorsForFileOnly::VersionError(_)) => {}
+    Err(FileOnly::FileError(_)) => panic!("expected a version error"),
+}
+```
+
+Despite the input's `type` syntax, this generates a **new enum**, not a tuple
+alias. Its name and visibility come from the declaration; documentation and
+other attributes are transferred to the enum. Place the declaration in its
+desired module rather than using the attribute's module/visibility options.
+
+The tuple explicitly lists the entire contract. `from(...)` generates the same
+full `From` or partial `split` conversions as on functions; it never infers a
+union or flattens nested sets. Named sets expose the same hidden metadata and
+atomic introspection as function-generated sets, so they can also be sources,
+including through reexports and across crates.
+
+A single atom requires `(Atom,)`. On a function returning `Result<T, Atom>`,
+remove `#[errorset]` to return the atom directly, or use `Result<T, (Atom,)>`
+to generate a single-error enum.
+
+Generic named declarations are rejected; concrete payloads such as
+`ParseError<u32>` remain supported. Repeated identical atom syntax is rejected
+with both positions in named declarations (functions retain their existing
+deduplication). Aliases of the same type are still checked by rustc. Name
+conflicts, including a manually declared `SendErrors` next to a `send` method
+generating that name, are diagnosed by rustc at the two declarations.
+
 ## Classifying by atomic error type
 
 Import `smarterr::ErrorSet` to borrow the active atom without listing every
