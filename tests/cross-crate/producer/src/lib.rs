@@ -7,7 +7,7 @@ pub mod api {
     use super::*;
     use smarterr::errorset::errorset;
 
-    #[errorset(export)]
+    #[errorset]
     pub fn read(version: bool) -> Result<(), (FileError, VersionError)> {
         if version {
             Err(VersionError { version: 7 }.into())
@@ -16,3 +16,15 @@ pub mod api {
         }
     }
 }
+
+pub mod other {
+    use super::*;
+    use smarterr::errorset::errorset;
+
+    #[errorset]
+    pub fn read() -> Result<(), (FileError,)> {
+        Err(FileError { code: 99 }.into())
+    }
+}
+
+pub use api::ReadErrors as PublicReadErrors;

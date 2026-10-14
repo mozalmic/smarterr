@@ -19,7 +19,7 @@ dependencies = [
 
 [[package]]
 name = "errorset"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "anyhow",
  "convert_case",
@@ -49,7 +49,7 @@ dependencies = [
 
 [[package]]
 name = "smarterr"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "anyhow",
  "errorset",

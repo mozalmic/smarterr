@@ -4,14 +4,14 @@ use std::{path::Path, process::Command};
 fn unsupported_or_unsafe_conversions_are_compile_errors() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let cases = [
-        ("partial-question-mark", "From<ReadErrors>"),
+        ("partial-question-mark", "couldn't convert the error to `PartialErrors`"),
         ("incomplete-match", "non-exhaustive patterns"),
         ("wrong-type", "mismatched types"),
         ("unknown-mapping", "mapping names an unknown source variant"),
         ("generic-error", "composition requires concrete error types"),
         ("non-tuple", "export/from requires an explicit tuple"),
         ("generic-source", "generic and associated source sets are not supported"),
-        ("private-source", "enum `ReadErrors` is private"),
+        ("private-source", "macro import `ReadErrors` is private"),
         ("private-module", "module `sets` is private"),
     ];
     for (bin, diagnostic) in cases {

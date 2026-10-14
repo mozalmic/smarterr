@@ -34,7 +34,7 @@ mod functions {
         Ok(())
     }
 
-    #[errorset(export(crate_source))]
+    #[errorset]
     pub(crate) fn crate_read() -> Result<(), (FileError, VersionError)> {
         Err(VersionError {}.into())
     }
@@ -79,7 +79,7 @@ mod functions {
     }
 }
 
-#[errorset(from(functions::CrateReadErrors => functions::crate_source))]
+#[errorset(from(functions::CrateReadErrors))]
 pub(crate) fn load_crate() -> Result<(), (FileError,)> {
     match functions::crate_read().unwrap_err().split::<LoadCrateErrors>()? {
         CrateReadErrorsForLoadCrateErrors::VersionError(_) => {}
@@ -120,12 +120,12 @@ mod methods {
 
     #[errorset]
     impl NoModuleService {
-        #[errorset(export(no_module_source))]
+        #[errorset]
         pub(super) fn source(&self) -> Result<(), (FileError, VersionError)> {
             Err(VersionError {}.into())
         }
 
-        #[errorset(from(SourceErrors => no_module_source))]
+        #[errorset(from(SourceErrors))]
         fn target(&self) -> Result<(), (FileError,)> {
             match self.source().unwrap_err().split::<TargetErrors>()? {
                 SourceErrorsForTargetErrors::VersionError(_) => {}

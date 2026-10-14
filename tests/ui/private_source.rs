@@ -5,14 +5,13 @@ error!(pub FileError {} => "File");
 mod hidden {
     use super::*;
 
-    #[errorset(export(hidden_source))]
+    #[errorset]
     fn read() -> Result<(), (FileError,)> {
         Ok(())
     }
 }
 
-// Even the publicly exported internal descriptor cannot bypass type privacy.
-#[errorset(from(hidden::ReadErrors => __errorset_hidden_source))]
+#[errorset(from(hidden::ReadErrors))]
 fn load() -> Result<(), (FileError,)> {
     Ok(())
 }

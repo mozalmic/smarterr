@@ -7,7 +7,10 @@ use convert_case::{Case, Casing};
 use proc_macro::TokenStream;
 use proc_macro2::Span;
 use quote::{format_ident, quote, ToTokens};
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::atomic::{AtomicUsize, Ordering},
+};
 use syn::{
     braced, bracketed, parenthesized,
     parse::{Parse, ParseStream, Result},
@@ -89,7 +92,6 @@ impl Parse for ErrorsetArgs {
                         } else {
                             let mut path = ty.path.clone();
                             let last = path.segments.last_mut().unwrap();
-                            last.ident = format_ident!("{}Descriptor", last.ident);
                             last.arguments = PathArguments::None;
                             path
                         };
@@ -199,7 +201,7 @@ fn process_fn(args: &ErrorsetArgs, item_fn: &ItemFn, impl_generics: Option<&syn:
                         (new_return_type, err_types)
                     }
                     syn::GenericArgument::Type(Type::Paren(_)) | syn::GenericArgument::Type(Type::Path(_)) => {
-                        if args.export.is_some() || !args.sources.is_empty() {
+                        if cfg!(feature = "runtime") || args.export.is_some() || !args.sources.is_empty() {
                             return Err(syn::Error::new_spanned(
                                 &params.args,
                                 "export/from requires an explicit tuple of error types, including a trailing comma for one error",
@@ -277,7 +279,8 @@ fn process_fn(args: &ErrorsetArgs, item_fn: &ItemFn, impl_generics: Option<&syn:
     };
     let cfgs: Vec<_> = item_fn.attrs.iter().filter(|a| a.path().is_ident("cfg")).collect();
     let metadata = metadata(args, &enum_name, &enum_vis, &members, &cfgs);
-    let conversions = args.sources.iter().map(|source| {
+    let remainders = remainder_names(&args.sources, &enum_name)?;
+    let conversions = args.sources.iter().zip(&remainders).map(|(source, remainder)| {
         let descriptor = &source.descriptor;
         let ty = &source.ty;
         let mappings = source.mappings.iter().map(|(s, t)| quote! { #s => #t, });
@@ -285,7 +288,7 @@ fn process_fn(args: &ErrorsetArgs, item_fn: &ItemFn, impl_generics: Option<&syn:
         quote! {
             #(#cfgs)*
             #descriptor!(::smarterr::errorset::__compose, [
-                #ty; #enum_name; #enum_vis;
+                #ty; #enum_name; #enum_vis; #remainder;
                 [#(#targets)*] [#(#mappings)*]
             ]);
         }
@@ -316,6 +319,33 @@ fn process_fn(args: &ErrorsetArgs, item_fn: &ItemFn, impl_generics: Option<&syn:
     };
 
     Ok(Some(Output { enum_def, fn_def: new_fn }))
+}
+
+fn remainder_names(sources: &[Source], target: &Ident) -> Result<Vec<Ident>> {
+    let mut counts = HashMap::new();
+    for source in sources {
+        let name = source.ty.path.segments.last().unwrap().ident.to_string();
+        *counts.entry(name).or_insert(0usize) += 1;
+    }
+    let mut seen = HashSet::new();
+    sources.iter().map(|source| {
+        let name = source.ty.path.segments.last().unwrap().ident.to_string();
+        let prefix = if counts[&name] > 1 {
+            source.ty.path.segments.iter()
+                .map(|segment| segment.ident.to_string().to_case(Case::Pascal))
+                .collect::<String>()
+        } else {
+            name
+        };
+        let remainder = format_ident!("{}For{}", prefix, target);
+        if !seen.insert(remainder.to_string()) {
+            return Err(syn::Error::new_spanned(
+                &source.ty,
+                "ambiguous remainder name; give these source sets distinct named aliases",
+            ));
+        }
+        Ok(remainder)
+    }).collect()
 }
 
 fn members(types: &Punctuated<Type, Token![,]>) -> Result<Vec<(Ident, Type)>> {
@@ -406,13 +436,22 @@ fn metadata(
     members: &[(Ident, Type)],
     cfgs: &[&syn::Attribute],
 ) -> proc_macro2::TokenStream {
-    let Some(export) = &args.export else { return quote! {} };
-    let descriptor = match export {
+    // Only internal exported macro names need crate-wide uniqueness.
+    static NEXT_DESCRIPTOR: AtomicUsize = AtomicUsize::new(0);
+    let internal = format_ident!("__errorset_{}_{}", name, NEXT_DESCRIPTOR.fetch_add(1, Ordering::Relaxed));
+    let descriptor = args.export.as_ref().map(|export| match export {
         DescriptorExport::Default => format_ident!("{}Descriptor", name),
         DescriptorExport::Named(name) => name.clone(),
-    };
-    let internal = format_ident!("__errorset_{}", descriptor);
-    let member_impls = members.iter().enumerate().map(|(index, (_, ty))| {
+    });
+    let descriptor_alias = descriptor.filter(|descriptor| descriptor != name).map(|descriptor| {
+        quote! {
+            #(#cfgs)*
+            #[doc(hidden)]
+            #vis use #internal as #descriptor;
+        }
+    });
+    let runtime = cfg!(feature = "runtime") || args.export.is_some() || !args.sources.is_empty();
+    let member_impls = members.iter().enumerate().filter(|_| runtime).map(|(index, (_, ty))| {
         quote! {
             #(#cfgs)*
             impl ::smarterr::ErrorSetMember<#index> for #name {
@@ -424,8 +463,10 @@ fn metadata(
         .iter()
         .enumerate()
         .map(|(index, (variant, _))| quote! { #variant #index, });
+    let atom = runtime.then(|| error_set_impl(name, members.iter().map(|(variant, _)| variant), cfgs));
     quote! {
         #(#member_impls)*
+        #atom
         #(#cfgs)*
         #[doc(hidden)]
         #[macro_export]
@@ -436,7 +477,29 @@ fn metadata(
         }
         #(#cfgs)*
         #[doc(hidden)]
-        #vis use #internal as #descriptor;
+        #vis use #internal as #name;
+        #descriptor_alias
+    }
+}
+
+fn error_set_impl<'a>(
+    name: &Ident,
+    variants: impl Iterator<Item = &'a Ident>,
+    cfgs: &[&syn::Attribute],
+) -> proc_macro2::TokenStream {
+    let arms: Vec<_> = variants.map(|variant| quote! { Self::#variant(error) => error, }).collect();
+    let body = if arms.is_empty() {
+        quote! { match *self {} }
+    } else {
+        quote! { match self { #(#arms)* } }
+    };
+    quote! {
+        #(#cfgs)*
+        impl ::smarterr::ErrorSet for #name {
+            fn as_error(&self) -> &(dyn ::std::error::Error + 'static) {
+                #body
+            }
+        }
     }
 }
 
@@ -444,6 +507,7 @@ struct Composition {
     source: TypePath,
     target: Ident,
     visibility: Visibility,
+    remainder: Ident,
     targets: Vec<(Ident, Type)>,
     mappings: Vec<(Ident, Ident)>,
     variants: Vec<(Ident, LitInt)>,
@@ -458,6 +522,8 @@ impl Parse for Composition {
         let target = context.parse()?;
         context.parse::<Token![;]>()?;
         let visibility = context.parse()?;
+        context.parse::<Token![;]>()?;
+        let remainder = context.parse()?;
         context.parse::<Token![;]>()?;
         let target_list;
         bracketed!(target_list in context);
@@ -491,6 +557,7 @@ impl Parse for Composition {
             source,
             target,
             visibility,
+            remainder,
             targets,
             mappings,
             variants,
@@ -515,6 +582,7 @@ fn compose(input: Composition) -> Result<proc_macro2::TokenStream> {
         source,
         target,
         visibility,
+        remainder,
         targets,
         mappings,
         variants,
@@ -536,9 +604,8 @@ fn compose(input: Composition) -> Result<proc_macro2::TokenStream> {
             return Err(syn::Error::new_spanned(s, "duplicate source variant mapping"));
         }
     }
-    let source_name = &source.path.segments.last().unwrap().ident;
-    let remainder = format_ident!("{}For{}", source_name, target);
     let mut remainder_variants = Vec::new();
+    let mut remainder_names = Vec::new();
     let mut split_arms = Vec::new();
     let mut from_arms = Vec::new();
     for (variant, index) in variants {
@@ -551,6 +618,7 @@ fn compose(input: Composition) -> Result<proc_macro2::TokenStream> {
             split_arms.push(quote! { Self::#variant(e) => Err(#target::#destination(e)), });
             from_arms.push(quote! { #source::#variant(e) => Self::#destination(e), });
         } else {
+            remainder_names.push(variant.clone());
             remainder_variants.push(quote! {
                 #[error(transparent)]
                 #variant(<#source as ::smarterr::ErrorSetMember<#index>>::Error),
@@ -569,11 +637,13 @@ fn compose(input: Composition) -> Result<proc_macro2::TokenStream> {
     } else {
         quote! {}
     };
+    let atom = error_set_impl(&remainder, remainder_names.iter(), &[]);
     Ok(quote! {
         #[derive(::thiserror::Error, Debug)]
         #visibility enum #remainder {
             #(#remainder_variants)*
         }
+        #atom
         impl ::smarterr::SplitInto<#target> for #source {
             type Remainder = #remainder;
             fn split_into(self) -> ::core::result::Result<Self::Remainder, #target> {

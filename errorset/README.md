@@ -106,17 +106,22 @@ Generated error enum is just a transparent wrapper around the original error typ
 
 ## Conversions and partial handling
 
-Composition requires the `smarterr` runtime and `thiserror` dependencies. Existing
-uses without `export` or `from` do not require the new runtime traits.
+Composition and atom introspection require the `smarterr` runtime and `thiserror`
+dependencies. Using `smarterr` with its `errorset` feature enables the proc
+macro's `runtime` feature automatically. Direct users of the `errorset` crate
+should enable its `runtime` feature and depend on `smarterr` to use these APIs.
+Standalone uses without `runtime`, `export`, or `from` still need no runtime
+traits.
 
-Mark a source method with `#[errorset(export)]`. In addition to its usual enum
-it exposes a descriptor macro named `<EnumName>Descriptor` in the enum's module.
-This macro carries variant names and indices, not resolved Rust types. Generated
+Every generated enum exposes a hidden descriptor macro with the **same name**
+in the enum's module; Rust's type and macro namespaces are separate. No `export`
+annotation is needed on the source. This macro carries variant names and
+indices, not resolved Rust types. Generated
 `smarterr::ErrorSetMember<INDEX>` implementations expose the actual payload types
 to the Rust compiler.
 
 On the target method, `#[errorset(from(ReadErrors))]` requests a conversion from
-`ReadErrors`, using `ReadErrorsDescriptor`. Multiple sources are supported:
+`ReadErrors`, using its same-named metadata macro. Multiple sources are supported:
 
 ```rust,ignore
 #[errorset(from(ReadErrors, DecryptErrors))]
@@ -129,6 +134,9 @@ fn load() -> Result<(), (FileError, VersionError, CryptoError, InvalidKey)> {
 
 The explicit tuple remains the entire contract. For each source, the macro
 generates `SplitInto<Target>` and a `<SourceName>For<TargetName>` remainder enum.
+If multiple sources have the same final name, their remainder names use the
+source paths in PascalCase to avoid collisions (for example,
+`ApiReadErrorsForLoadErrors` and `StorageReadErrorsForLoadErrors`).
 Import `smarterr::ErrorSet` to call:
 
 ```rust,ignore
@@ -151,7 +159,7 @@ The default descriptor path follows the source type path:
 ```rust,ignore
 // In a producer crate:
 pub mod api {
-    #[errorset(export)]
+    #[errorset]
     pub fn read() -> Result<(), (FileError, VersionError)> { /* ... */ }
 }
 
@@ -168,13 +176,16 @@ pub fn load() -> Result<(), (reader::FileError,)> {
 }
 ```
 
-`export(custom_descriptor)` overrides the descriptor name.
+`export` additionally exposes the legacy `<EnumName>Descriptor` alias.
+`export(custom_descriptor)` exposes an explicitly named descriptor alias.
 `from(Source => path::custom_descriptor)` specifies its path explicitly.
+For a producer built with an older macro version, use this explicit form with
+its existing descriptor alias, or rebuild it to expose same-named metadata.
 With `#[errorset(pub mod errors)]`, the descriptor is in `errors` alongside the
 enum. On inherent impls, place `export`/`from` on individual marked methods and
 the module option on the impl block.
 
-Without a generated module, the enum, descriptor alias, and remainder have the
+Without a generated module, the enum, metadata macro, descriptor alias, and remainder have the
 same visibility as the function or method (`pub`, `pub(crate)`, `pub(super)`,
 `pub(in ...)`, or private). With a generated module, enums and descriptor aliases
 are `pub` inside that module, as in the original API; the module's visibility
@@ -182,13 +193,15 @@ restricts access from outside. Function/method visibility itself is unchanged.
 Private source types and modules cannot be used to generate conversions outside
 their Rust visibility scope.
 
-Descriptor macros use an exported internal name, `__errorset_<descriptor>`,
-which must be unique within the producer crate. If two modules export the same
-generated enum name, give their descriptors distinct explicit names.
+Descriptor macros use automatically unique exported internal names. Two
+modules may declare identically named enums or descriptor aliases without
+renaming methods or configuring custom exports.
 The hidden internal macro is exported at crate root even for a private source;
 only its module alias follows the declared visibility. It contains variant
 names and indices, not payload values, and does not bypass Rust type privacy.
-Declaration order is not significant; no global proc-macro state is used. Descriptors are a
+Declaration order is not significant; no global registry of source sets is
+used. A counter allocates internal macro names only; composition resolves the
+module-scoped metadata through Rust's name resolution. Descriptors are a
 version-one internal protocol, not a general-purpose type-reflection facility.
 
 ### Type identity, aliases, and variant names
@@ -213,8 +226,9 @@ version-one internal protocol, not a general-purpose type-reflection facility.
   mappings are diagnosed. Without a mapping, an unmatched source variant stays
   in the remainder, even if rustc would consider its payload equal to a target
   payload. The macro does not resolve aliases.
-* Reexporting an enum does not also reexport its descriptor: reexport that macro
-  too, or specify its original path with `=>`.
+* Reexporting an enum also reexports its same-named metadata macro. Renamed
+  reexports work directly with `from(PublicErrors)`. Separately named descriptor
+  aliases still need their own reexport or an explicit path with `=>`.
 * Listing two aliases of the same type as separate atoms is unsupported: rustc
   rejects overlapping `From` implementations. It is not silently deduplicated.
 
@@ -234,6 +248,19 @@ removal of locally handled errors and no body-based contract lint is implemented
 
 The emitted code currently expects dependency names `smarterr` and `thiserror`.
 Producer crates containing the atomic errors may be renamed freely.
+
+### Atomic introspection
+
+With runtime support enabled, generated enums and remainder enums support
+`error.downcast_ref::<Atom>()` via `smarterr::ErrorSet`. This borrows the active
+atomic payload by its actual Rust type, independently of variant names and
+aliases. An absent atom returns `None`; nested causes are not searched.
+Transparent formatting and `source()` are unchanged. Runtime-supported atoms
+must implement `std::error::Error + 'static`.
+`ErrorSet::as_error()` borrows the same atom as `&dyn std::error::Error`.
+Generic classifiers need only an `E: ErrorSet` bound. The previous blanket
+implementation for all types is removed: manual `SplitInto` types must also
+implement `ErrorSet::as_error()` to use the `split()` extension.
 
 Run the two-crate regression fixture with:
 

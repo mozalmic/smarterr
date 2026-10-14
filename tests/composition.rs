@@ -5,7 +5,7 @@ error!(pub VersionError {} => "Version");
 error!(pub CryptoError {} => "Crypto");
 error!(pub InvalidKey {} => "Invalid key");
 
-#[errorset(export)]
+#[errorset]
 fn read(choice: u8) -> Result<(), (FileError, VersionError, CryptoError)> {
     match choice {
         0 => Ok(()),
@@ -15,12 +15,12 @@ fn read(choice: u8) -> Result<(), (FileError, VersionError, CryptoError)> {
     }
 }
 
-#[errorset(export)]
+#[errorset]
 fn decrypt() -> Result<(), (CryptoError, FileError)> {
     Err(FileError { code: 8 }.into())
 }
 
-#[errorset(export, from(ReadErrors, DecryptErrors))]
+#[errorset(from(ReadErrors, DecryptErrors))]
 fn full(choice: u8) -> Result<(), (FileError, VersionError, CryptoError, InvalidKey, FileError)> {
     read(choice)?;
     decrypt()?;
@@ -160,7 +160,7 @@ fn before_source() -> Result<(), (FileError,)> {
     Ok(())
 }
 
-#[errorset(export)]
+#[errorset]
 fn later() -> Result<(), (FileError,)> {
     Err(FileError { code: 9 }.into())
 }
@@ -217,6 +217,152 @@ fn concrete_target() -> Result<u32, (GenericError<u32>,)> {
 #[test]
 fn concrete_generic_member_and_map_err() {
     assert_eq!(concrete_target().unwrap(), 42);
+    let error = ConcreteErrors::GenericError(GenericError(17));
+    assert_eq!(error.downcast_ref::<GenericError<u32>>().unwrap().0, 17);
+}
+
+mod first {
+    use super::*;
+
+    pub struct Storage;
+
+    #[errorset]
+    impl Storage {
+        #[errorset(export)]
+        pub fn open(&self) -> Result<(), (FileError,)> {
+            Err(FileError { code: 21 }.into())
+        }
+    }
+}
+
+mod second {
+    use super::*;
+
+    pub struct Connection;
+
+    #[errorset]
+    impl Connection {
+        #[errorset(export)]
+        pub fn open(&self) -> Result<(), (VersionError,)> {
+            Err(VersionError {}.into())
+        }
+    }
+}
+
+pub use first::OpenErrors as StorageOpenErrors;
+
+#[errorset(from(StorageOpenErrors, second::OpenErrors))]
+fn both_open() -> Result<(), (FileError, VersionError)> {
+    first::Storage.open()?;
+    second::Connection.open()?;
+    Ok(())
+}
+
+#[errorset(from(second::OpenErrors => second::OpenErrorsDescriptor))]
+fn legacy_descriptor() -> Result<(), (VersionError,)> {
+    second::Connection.open()?;
+    Ok(())
+}
+
+#[test]
+fn exported_method_names_are_module_scoped_and_reexports_carry_metadata() {
+    assert!(matches!(both_open(), Err(BothOpenErrors::FileError(FileError { code: 21 }))));
+    assert!(matches!(
+        second::Connection.open().unwrap_err().split::<BothOpenErrors>(),
+        Err(BothOpenErrors::VersionError(_))
+    ));
+    assert!(matches!(legacy_descriptor(), Err(LegacyDescriptorErrors::VersionError(_))));
+}
+
+macro_rules! repeated_source {
+    ($module:ident) => {
+        mod $module {
+            use super::*;
+
+            #[errorset(export)]
+            pub fn repeated() -> Result<(), (FileError,)> {
+                Err(FileError { code: 23 }.into())
+            }
+        }
+    };
+}
+
+repeated_source!(macro_first);
+repeated_source!(macro_second);
+
+#[errorset(from(macro_first::RepeatedErrors, macro_second::RepeatedErrors))]
+fn repeated_target() -> Result<(), (FileError,)> {
+    macro_first::repeated()?;
+    macro_second::repeated()?;
+    Ok(())
+}
+
+#[errorset(from(macro_first::RepeatedErrors, macro_second::RepeatedErrors))]
+fn repeated_partial() -> Result<(), (VersionError,)> {
+    match macro_first::repeated().unwrap_err().split::<RepeatedPartialErrors>()? {
+        MacroFirstRepeatedErrorsForRepeatedPartialErrors::FileError(error) => assert_eq!(error.code, 23),
+    }
+    match macro_second::repeated().unwrap_err().split::<RepeatedPartialErrors>()? {
+        MacroSecondRepeatedErrorsForRepeatedPartialErrors::FileError(error) => assert_eq!(error.code, 23),
+    }
+    Ok(())
+}
+
+#[test]
+fn identical_macro_generated_sources_do_not_collide() {
+    assert_eq!(repeated_target().unwrap_err().downcast_ref::<FileError>().unwrap().code, 23);
+    assert!(repeated_partial().is_ok());
+}
+
+#[test]
+fn downcast_borrows_active_atom_and_preserves_its_source() {
+    use std::error::Error;
+
+    let error = read(1).unwrap_err();
+    let atom = error.downcast_ref::<FileError>().unwrap();
+    assert!(error.source().is_none());
+    assert!(std::ptr::eq(atom, error.as_error().downcast_ref::<FileError>().unwrap()));
+    assert_eq!(atom.code, 7);
+    assert!(std::ptr::eq(atom, match &error {
+        ReadErrors::FileError(atom) => atom,
+        _ => panic!("expected file error"),
+    }));
+    assert!(error.downcast_ref::<VersionError>().is_none());
+
+    let semantic = semantic().unwrap_err();
+    assert!(semantic.downcast_ref::<SemanticError>().is_some());
+    assert!(semantic.downcast_ref::<VersionError>().is_none());
+    assert!(semantic.source().unwrap().downcast_ref::<ReadErrors>().is_some());
+    assert_eq!(semantic.to_string(), "Semantic read failure");
+
+    let remainder = read(1).unwrap_err().split::<PartialErrors>().unwrap();
+    assert_eq!(remainder.downcast_ref::<FileError>().unwrap().code, 7);
+    assert!(remainder.downcast_ref::<CryptoError>().is_none());
+}
+
+#[errorset]
+fn infallible() -> Result<(), ()> {
+    Ok(())
+}
+
+#[test]
+fn empty_sets_and_empty_remainders_support_introspection() {
+    fn assert_atom<T: ErrorSet>() {}
+    assert_atom::<InfallibleErrors>();
+    assert_atom::<ReadErrorsForFullErrors>();
+    assert!(infallible().is_ok());
+}
+
+#[test]
+fn one_trait_bound_classifies_unrelated_error_sets() {
+    fn file_code(error: &impl ErrorSet) -> Option<u32> {
+        error.downcast_ref::<FileError>().map(|atom| atom.code)
+    }
+
+    assert_eq!(file_code(&read(1).unwrap_err()), Some(7));
+    assert_eq!(file_code(&first::Storage.open().unwrap_err()), Some(21));
+    assert_eq!(file_code(&second::Connection.open().unwrap_err()), None);
+    assert_eq!(file_code(&read(1).unwrap_err().split::<PartialErrors>().unwrap()), Some(7));
 }
 
 #[cfg(any())]

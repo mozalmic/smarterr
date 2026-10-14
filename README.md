@@ -4,13 +4,28 @@
 
 With **_SmartErr_** it is possible to:
 
-* raise errors with `raise` and `throw` methods on regular types (numbers, strings, boolean, _Option_, _Result_, etc) as an error source. Look into [Raising errors](#raising-errors) section to find out more details.
+* raise errors with `raise` and `throw` methods on regular types (numbers, strings, boolean, _Option_, _Result_, etc) as an error source. Look into [Raising errors](#raising-or-throwing-errors) section to find out more details.
 * define atomic errors with `error!` macro (requires `atomic_error` feature).
-* define the exact set of errors emitted by the function or introduce global set for the public API (requires `erorrset` feature).
+* define the exact set of errors emitted by the function or introduce global set for the public API (requires `errorset` feature).
+
+## Installation
+
+Features are disabled by default. To use `error!`, `#[errorset]`, and conversions
+between error sets, enable `errorset`:
+
+```toml
+[dependencies]
+smarterr = { version = "1.2", features = ["errorset"] }
+thiserror = "2.0"
+```
+
+The `errorset` feature also enables `atomic_error`. A direct `thiserror`
+dependency is needed because the generated code uses its derive macro.
+For `throw` and `raise` alone, no features are required.
 
 ## Defining atomic errors
 
-With `atomic_error` feature enabled (it is also included into `smarterr` feature), it is possible to define atomic errors, which are structs, annotated with `thiserror::Error` attribute. For instance, the following definition:
+With `atomic_error` feature enabled (it is also included in the `errorset` feature), it is possible to define atomic errors, which are structs, annotated with `thiserror::Error` attribute. For instance, the following definition:
 
 ```rust,ignore
 error!(pub InvalidData<ParseIntError> { pub data: String } => "Invalid data provided [data={data}]");
@@ -49,7 +64,7 @@ Further actions depend on the function used to convert the value into _Result_:
 
 With `errorset` feature enabled, it is possible to define a set of errors emitted by the function. The `errorset` macro generates a new error type that contains all the errors from the function signature. 
 
-You may find more details in the [ErrorSet crate](https://crates.io/crates/errorset) documentation.
+You may find more details in the [ErrorSet crate](https://docs.rs/errorset/1.2.0/errorset/) documentation.
 
 `SmartErr` crate reexports `ErrorSet` crate, so you may use it functionality directly.
 
@@ -90,7 +105,7 @@ error!(pub FileError {} => "File error");
 error!(pub VersionError {} => "Unsupported version");
 error!(pub CryptoError {} => "Crypto error");
 
-#[errorset(export)]
+#[errorset]
 pub fn read() -> Result<(), (FileError, VersionError, CryptoError)> {
     Err(VersionError {}.into())
 }
@@ -121,5 +136,52 @@ If every source variant is included in the target, `From<Source>` is also
 generated, so the target can simply call `read()?`. For a partial conversion,
 that call deliberately does not compile: use `split` and handle the remainder.
 
-See the [errorset documentation](errorset/README.md#conversions-and-partial-handling)
+The macro checks conversions and exhaustive handling of excluded errors. It does
+not analyze method bodies to detect unused or unreachable errors in the declared
+tuple; keeping that contract precise remains the author's responsibility.
+
+Source sets automatically expose hidden metadata in their own module. No
+`export` annotation is required for `from(path::SourceErrors)`, including across
+crates. Methods in different modules can have the same name. Reexporting a set
+with `pub use module::SourceErrors as PublicErrors` also carries its metadata.
+The existing `export` and `export(custom_descriptor)` options remain available
+for explicitly named descriptor aliases.
+
+## Classifying by atomic error type
+
+Import `smarterr::ErrorSet` to borrow the active atom without listing every
+source set or inspecting transparent wrappers:
+
+```rust
+use smarterr::{error, errorset::errorset, ErrorSet};
+
+error!(pub ChatClosed {} => "Chat closed");
+error!(pub FileError { pub path: String } => "File error: {path}");
+
+#[errorset]
+fn send() -> Result<(), (ChatClosed, FileError)> {
+    Err(ChatClosed {}.into())
+}
+
+let error = send().unwrap_err();
+assert!(error.downcast_ref::<ChatClosed>().is_some());
+assert!(error.downcast_ref::<FileError>().is_none());
+```
+
+`downcast_ref::<Atom>()` works on generated sets and `split` remainders. It
+returns a reference to the stored atom, with no allocation or cloning. It checks
+only that atom's exact type (including type aliases), never nested causes.
+`Display` and `std::error::Error::source()` retain their transparent behavior;
+use `source()` to inspect the atom's cause, not to classify the atom itself.
+`ErrorSet::as_error()` also exposes the atom as `&dyn std::error::Error`.
+A generic classifier needs only an `E: ErrorSet` bound, not a list of source
+sets.
+
+**Compatibility:** `ErrorSet` is now implemented for generated sets, rather
+than blanket-implemented for every type. Generated sets retain `split()`.
+User-defined types with manual `SplitInto` implementations must implement
+`ErrorSet::as_error()` to retain the extension method, or call
+`SplitInto::split_into()` directly.
+
+See the [errorset documentation](https://docs.rs/errorset/1.2.0/errorset/#conversions-and-partial-handling)
 for modules, crates, aliases, and restrictions.

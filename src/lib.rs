@@ -18,8 +18,18 @@ pub trait SplitInto<Target>: Sized {
     fn split_into(self) -> Result<Self::Remainder, Target>;
 }
 
-/// Provides `error.split::<Target>()` for generated conversions.
+/// Provides atomic introspection and `error.split::<Target>()` for error sets.
 pub trait ErrorSet: Sized {
+    /// Borrows the active atomic payload, not its source.
+    fn as_error(&self) -> &(dyn std::error::Error + 'static);
+
+    /// Borrows the active atom by its exact type, without traversing `source()`.
+    ///
+    /// Returns `None` for other atoms, including causes nested inside the atom.
+    fn downcast_ref<E: std::error::Error + 'static>(&self) -> Option<&E> {
+        self.as_error().downcast_ref()
+    }
+
     fn split<Target>(self) -> Result<<Self as SplitInto<Target>>::Remainder, Target>
     where
         Self: SplitInto<Target>,
@@ -27,8 +37,6 @@ pub trait ErrorSet: Sized {
         self.split_into()
     }
 }
-
-impl<T> ErrorSet for T {}
 
 #[cfg(feature = "atomic_error")]
 #[macro_export]

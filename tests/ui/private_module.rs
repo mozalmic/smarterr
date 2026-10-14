@@ -5,13 +5,13 @@ error!(pub FileError {} => "File");
 mod hidden {
     use super::*;
 
-    #[errorset(mod sets, export(hidden_module_source))]
+    #[errorset(mod sets)]
     pub fn read() -> Result<(), (FileError,)> {
         Ok(())
     }
 }
 
-#[errorset(from(hidden::sets::ReadErrors => __errorset_hidden_module_source))]
+#[errorset(from(hidden::sets::ReadErrors))]
 fn load() -> Result<(), (FileError,)> {
     Ok(())
 }
